@@ -1,0 +1,8 @@
+{"level":"info","timestamp":"2025-11-20T15:48:59.908+0800","caller":"logger/log.go:36","message":"init logger success","mode":"release"}
+{"level":"info","timestamp":"2025-11-20T15:48:59.913+0800","caller":"GoBlog/main.go:18","message":"Init finished"}
+{"level":"info","timestamp":"2025-11-20T15:49:31.422+0800","caller":"logger/log.go:36","message":"init logger success","mode":"release"}
+{"level":"info","timestamp":"2025-11-20T15:49:31.428+0800","caller":"GoBlog/main.go:18","message":"Init finished"}
+{"level":"error","timestamp":"2025-11-20T15:49:31.428+0800","caller":"GoBlog/main.go:19","message":"Test finished"}
+{"level":"info","timestamp":"2025-11-20T15:56:58.888+0800","caller":"logger/log.go:36","message":"init logger success","mode":"release"}
+{"level":"info","timestamp":"2025-11-20T15:56:58.935+0800","caller":"GoBlog/main.go:18","message":"Init finished"}
+{"level":"error","timestamp":"2025-11-20T15:56:58.935+0800","caller":"GoBlog/main.go:19","message":"Test finished"}
