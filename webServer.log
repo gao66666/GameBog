@@ -1,2 +1,0 @@
-{"level":"info","timestamp":"2025-11-20T15:43:20.915+0800","caller":"logger/log.go:36","message":"init logger success","mode":"release"}
-{"level":"info","timestamp":"2025-11-20T15:43:20.920+0800","caller":"GoBlog/main.go:18","message":"Init finished"}

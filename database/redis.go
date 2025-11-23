@@ -14,8 +14,18 @@ var (
 	ctx    = context.Background()
 )
 
+// RedisRepository Redis操作封装
+type RedisRepository struct {
+	client *redis.Client
+}
+
+// NewRedisRepository 创建RedisRepository实例
+func NewRedisRepository(client *redis.Client) *RedisRepository {
+	return &RedisRepository{client: client}
+}
+
 // Init 初始化Redis连接
-func RedisInit(cfg *setting.RedisConfig) error {
+func RedisInit(cfg *setting.RedisConfig) (*RedisRepository, error) {
 	client = redis.NewClient(&redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Password: cfg.Password,
@@ -29,34 +39,29 @@ func RedisInit(cfg *setting.RedisConfig) error {
 
 	_, err := client.Ping(testCtx).Result()
 	if err != nil {
-		return fmt.Errorf("redis连接失败: %v", err)
+		return nil, fmt.Errorf("redis连接失败: %v", err)
 	}
 
-	return nil
+	return NewRedisRepository(client), nil
 }
 
 // Close 关闭连接
-func RedisClose() error {
-	if client != nil {
-		return client.Close()
+func (r *RedisRepository) Close() error {
+	if r.client != nil {
+		return r.client.Close()
 	}
 	return nil
 }
 
 // 封装常用操作
-func Get(key string) (string, error) {
-	return client.Get(ctx, key).Result()
+func (r *RedisRepository) Get(key string) (string, error) {
+	return r.client.Get(ctx, key).Result()
 }
 
-func Set(key string, value interface{}, expiration time.Duration) error {
-	return client.Set(ctx, key, value, expiration).Err()
+func (r *RedisRepository) Set(key string, value interface{}, expiration time.Duration) error {
+	return r.client.Set(ctx, key, value, expiration).Err()
 }
 
-func Del(key string) error {
-	return client.Del(ctx, key).Err()
-}
-
-// 获取原始客户端（用于复杂操作）
-func Client() *redis.Client {
-	return client
+func (r *RedisRepository) Del(key string) error {
+	return r.client.Del(ctx, key).Err()
 }
