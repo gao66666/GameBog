@@ -1,12 +1,12 @@
 package handler
 
 import (
-	"log"
+	"net/http"
 
-	"github.com/gao66666/GoBlog/database"
 	"github.com/gao66666/GoBlog/models"
-	"github.com/gao66666/GoBlog/service"
+	"github.com/gao66666/GoBlog/tool"
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func (h *UserHandler) LoginHandle(c *gin.Context) {
@@ -18,15 +18,7 @@ func (h *UserHandler) LoginHandle(c *gin.Context) {
 	//登录成功，用户不存在，登录密码错误、数据库查询失败
 	user, token, err := h.se.Login(param)
 	if err != nil {
-		switch err {
-		case service.ErrUserNotFound:
-			c.JSON(404, gin.H{"error": "用户不存在"})
-		case service.ErrWrongPassword:
-			c.JSON(401, gin.H{"error": "密码错误"})
-		default:
-			log.Printf("登录系统错误: %v", err)
-			c.JSON(500, gin.H{"error": "系统繁忙，请稍后重试"})
-		}
+		tool.ResponseError(c, err)
 		return
 	}
 	c.JSON(200, gin.H{
@@ -44,24 +36,68 @@ func (hd *UserHandler) SignUpHandle(c *gin.Context) {
 		return
 	}
 
-	err := hd.se.SignUp(param)
+	// 调用 Service，获取 ID 和 业务错误
+	userID, err := hd.se.SignUp(param)
+
 	if err != nil {
-		switch err {
-		case database.ErrHash:
-			c.JSON(500, gin.H{"error": "系统错误，请稍后重试"}) // 内部错误用500
-		case database.ErrUserExists:
-			c.JSON(400, gin.H{"error": "该电话号码已经被注册"}) // 业务错误用400
-		case database.ErrCreatUser:
-			c.JSON(400, gin.H{"error": "数据库创建用户失败"}) // 业务错误用400
-		default:
-			c.JSON(500, gin.H{"error": "系统繁忙，请稍后重试"})
-		}
+		// 只根据 Service 层的业务错误做判断
+		tool.ResponseError(c, err)
 		return
 	}
 
 	// 成功情况
 	c.JSON(200, gin.H{
 		"message": "用户注册成功",
-		"user_id": 123, // 如果有的话
+		"user_id": userID, // 如果有的话
 	})
+}
+
+func (hd *UserHandler) UpdateUserHandle(c *gin.Context) {
+	// 1. 获取当前登录用户 ID (从 JWT 中间件解析出来的)
+	uid, _ := c.Get("userID")
+	userID := uid.(uint64)
+
+	// 2. 绑定参数
+	var p models.UpdateUserParam
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"msg": "参数格式错误"})
+		return
+	}
+
+	// 3. 将 struct 转换为 map，实现“传哪个改哪个”
+	updateMap := make(map[string]interface{})
+	if p.Name != nil {
+		updateMap["name"] = *p.Name
+	}
+	if p.Tel != nil {
+		updateMap["tel"] = *p.Tel
+	}
+	if p.PassWord != nil {
+		// 因为 p.PassWord 是 *string，所以需要用 *p.PassWord 拿到真正的字符串内容
+		// 然后再用 []byte() 转换成字节切片
+		hashedBytes, err := bcrypt.GenerateFromPassword([]byte(*p.PassWord), bcrypt.DefaultCost)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"msg": "错误的密码格式"})
+			return
+		}
+		// 存入 map，准备更新数据库
+		updateMap["password"] = string(hashedBytes)
+	}
+	if p.Email != nil {
+		updateMap["email"] = *p.Email
+	}
+
+	// 如果用户什么都没传，直接返回成功
+	if len(updateMap) == 0 {
+		c.JSON(http.StatusOK, gin.H{"msg": "没有需要更新的内容"})
+		return
+	}
+
+	// 4. 调用 Service 执行更新
+	if err := hd.se.UpdateUser(userID, updateMap); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"msg": "更新失败"})
+		return
+	}
+
+	c.JSON(http.StatusNotFound, gin.H{"msg": "更新成功"})
 }

@@ -19,7 +19,16 @@ func NewDataDriver(mysqlRepo *UserRepository, redisRepo *RedisRepository) *DataD
 	return &DataDriver{mysqlRepo: mysqlRepo, redisRepo: redisRepo}
 }
 
-func MysqlInit(cfg *setting.MySQLConfig) *UserRepository {
+type Repository struct {
+	db *gorm.DB
+}
+
+// NewRepository 创建基础仓库实例
+func NewRepository(db *gorm.DB) *Repository {
+	return &Repository{db: db}
+}
+
+func MysqlInit(cfg *setting.MySQLConfig) (*UserRepository, *ArticleRepository) {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.DB)
 
@@ -33,12 +42,19 @@ func MysqlInit(cfg *setting.MySQLConfig) *UserRepository {
 
 	// 创建UserRepository
 	userRepo := NewUserRepository(db)
-
 	// 初始化表
 	err = userRepo.InitTable()
 	if err != nil {
-		panic("初始化表失败: " + err.Error())
+		panic("初始化用户表失败: " + err.Error())
 	}
+
+	articleRepo := NewArticleRepository(db)
+	// 初始化表
+	err = articleRepo.InitTable()
+	if err != nil {
+		panic("初始化文章表失败: " + err.Error())
+	}
+
 	fmt.Println("数据库初始化测试完成!")
-	return userRepo
+	return userRepo, articleRepo
 }

@@ -39,3 +39,10 @@ func (u *User) CheckPassword(plainPassword string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(plainPassword))
 	return err == nil
 }
+
+type UpdateUserParam struct {
+	Name     *string `json:"name"` // 使用指针，区分“传了空字符串”和“完全没传”
+	Tel      *string `json:"tel"`
+	PassWord *string `json:"password"`
+	Email    *string `json:"email"`
+}

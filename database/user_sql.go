@@ -3,17 +3,19 @@ package database
 import (
 	"fmt"
 
-	"errors"
 	"strings"
 
 	"github.com/gao66666/GoBlog/models"
+	"github.com/gao66666/GoBlog/tool"
 	"gorm.io/gorm"
 )
 
 var (
-	ErrCreatUser  = errors.New("数据库新增用户出错")
-	ErrHash       = errors.New("密码哈希出错")
-	ErrUserExists = errors.New("该电话号码已经注册")
+	ErrInitUser   = tool.NewBizError(404, 40001, "用户数据库初始化出错")
+	ErrCreatUser  = tool.NewBizError(404, 40001, "数据库新增用户出错")
+	ErrHash       = tool.NewBizError(404, 40001, "密码哈希出错")
+	ErrUserExists = tool.NewBizError(404, 40001, "该电话号码已经注册")
+	ErrUserGet    = tool.NewBizError(404, 40001, "无法查询到该用户")
 )
 
 // 用户Repository
@@ -30,7 +32,7 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 func (r *UserRepository) InitTable() error {
 	err := r.db.AutoMigrate(&models.User{})
 	if err != nil {
-		return err
+		return ErrInitUser
 	}
 	fmt.Println("用户表初始化成功")
 	return nil
@@ -39,12 +41,8 @@ func (r *UserRepository) InitTable() error {
 // 创建用户
 // 创建用户
 func (r *UserRepository) CreateUser(user *models.User) error {
-	// 1. 加密密码
-	if err := user.HashPassword(); err != nil {
-		return ErrHash
-	}
 
-	// 2. 存储到数据库
+	//存储到数据库
 	result := r.db.Create(user)
 	if result.Error != nil {
 		// 如果是唯一约束错误
@@ -63,26 +61,17 @@ func isDuplicateKeyError(err error) bool {
 	return strings.Contains(err.Error(), "Duplicate entry") ||
 		strings.Contains(err.Error(), "1062")
 }
+
 func (r *UserRepository) GetUserByID(userid uint64) (*models.User, error) {
 	var user models.User
 	result := r.db.First(&user, userid)
 	if result.Error != nil {
-		return nil, result.Error // 返回原始错误
+		return nil, ErrUserGet // 返回原始错误
 	}
 	return &user, nil
 }
 
-func (r *UserRepository) VerifyUser(userid uint, plainPassword string) (*models.User, error) {
-	var user models.User
-	result := r.db.Where("email = ?", userid).First(&user)
-	if result.Error != nil {
-		return nil, fmt.Errorf("用户不存在: %w", result.Error)
-	}
-
-	// 验证密码
-	if !user.CheckPassword(plainPassword) {
-		return nil, fmt.Errorf("密码错误")
-	}
-
-	return &user, nil
+func (r *UserRepository) UpdateUser(userID uint64, data map[string]interface{}) error {
+	// 只有传入的 map 中存在的 key，SQL 才会更新对应的列
+	return r.db.Model(&models.User{}).Where("id = ?", userID).Updates(data).Error
 }
