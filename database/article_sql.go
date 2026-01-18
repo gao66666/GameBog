@@ -44,7 +44,7 @@ func (r *ArticleRepository) CreateArticle(article *models.Article) error {
 
 func (r *ArticleRepository) GetArticleByID(id uint64) (*models.Article, error) {
 	var article models.Article
-	// Preload 会自动关联查询出作者信息和标签信息
+	// Preload 会自动关联查询出标签信息
 	err := r.db.Preload("Tags").Where("id = ?", id).First(&article).Error
 	if err != nil {
 		return nil, err

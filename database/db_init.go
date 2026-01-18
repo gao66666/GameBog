@@ -28,7 +28,7 @@ func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
 }
 
-func MysqlInit(cfg *setting.MySQLConfig) (*UserRepository, *ArticleRepository) {
+func MysqlInit(cfg *setting.MySQLConfig) (*UserRepository, *ArticleRepository,*CommentRepository) {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.DB)
 
@@ -40,21 +40,25 @@ func MysqlInit(cfg *setting.MySQLConfig) (*UserRepository, *ArticleRepository) {
 	}
 	fmt.Println("数据库连接成功")
 
-	// 创建UserRepository
+	// 1 创建UserRepository
 	userRepo := NewUserRepository(db)
-	// 初始化表
 	err = userRepo.InitTable()
 	if err != nil {
 		panic("初始化用户表失败: " + err.Error())
 	}
-
+	// 2 创建ArticleRepository
 	articleRepo := NewArticleRepository(db)
-	// 初始化表
 	err = articleRepo.InitTable()
 	if err != nil {
 		panic("初始化文章表失败: " + err.Error())
 	}
+	// 3 创建CommentRepository
+	commentRepo:=NewCommentRepository(db)
+	err=commentRepo.InitTable()
+	if err!=nil{
+		panic("初始化评论数据库失败"+err.Error())
+	}
 
 	fmt.Println("数据库初始化测试完成!")
-	return userRepo, articleRepo
+	return userRepo, articleRepo,commentRepo
 }
