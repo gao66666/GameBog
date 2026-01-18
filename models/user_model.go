@@ -5,11 +5,14 @@ import (
 )
 
 type User struct {
-	ID       uint64 `gorm:"primaryKey"`
-	Name     string `gorm:"column:name;size:50"`
-	Email    string `gorm:"column:email;size:100"`
-	Tel      string `gorm:"column:tel;size:20;uniqueIndex"`
-	Password string `gorm:"column:password;size:255"`
+	ID             uint64 `gorm:"primaryKey"`
+	Name           string `gorm:"column:name;size:50"`
+	Email          string `gorm:"column:email;size:100"`
+	Tel            string `gorm:"column:tel;size:20;uniqueIndex"`
+	Password       string `gorm:"column:password;size:255"`
+	Avatar         string `gorm:"column:avatar"`          // 头像链接
+	FollowingCount uint64 `gorm:"column:following_count"` // 被多少人关注
+	FollowerCount  uint64 `gorm:"column:follower_count"`  //关注了多少人
 }
 
 // ParamSignUp 注册请求参数
@@ -45,4 +48,5 @@ type UpdateUserParam struct {
 	Tel      *string `json:"tel"`
 	PassWord *string `json:"password"`
 	Email    *string `json:"email"`
+	Avatar   *string `json:"avatar"`
 }

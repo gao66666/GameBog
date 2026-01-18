@@ -25,7 +25,7 @@ func (s *ArticleService) CreateArticle(article *models.Article) error {
 func (s ArticleService) GetArticle(id uint64) (*models.Article, error) {
 	article, err := s.articleDB.GetArticleByID(id)
 	go func() {
-		_ = s.articleDB.IncrementViewCount(id)
+		_ = s.articleDB.IncrementViewCount(id) //增加阅读量
 	}()
 	return article, err
 }

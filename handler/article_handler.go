@@ -42,7 +42,7 @@ func (h *ArticleHandler) CreateArticleHandle(c *gin.Context) {
 		Summary:    p.Content, // 自动截取正文前100字作为摘要
 		AuthorID:   userID.(uint64),
 		CategoryID: p.CategoryID, // 保持命名统一
-	}
+	}		
 
 	if err := h.se.CreateArticle(article); err != nil {
 		tool.ResponseError(c, CodeServerBusy)
@@ -57,10 +57,6 @@ func (h *ArticleHandler) ReadArticleHandle(c *gin.Context) {
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
 		zap.L().Error("没有有效参数")
-	}
-	if err != nil {
-		zap.L().Error("GetArticleDetail failed", zap.Error(err))
-		c.JSON(http.StatusNotFound, gin.H{"msg": "文章不存在或已被删除"})
 		return
 	}
 	article, err := h.se.GetArticle(id)
@@ -69,15 +65,17 @@ func (h *ArticleHandler) ReadArticleHandle(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"msg": "文章不存在或已被删除"})
 		return
 	}
+	
 	//这里应该是将数据传给前端进行展示的
 	c.JSON(http.StatusOK, gin.H{
 		"msg": "查询成功",
 		"data": gin.H{
+			"article_id": idStr,
 			"title":      article.Title,
 			"summary":    article.Summary,
 			"content":    article.Content, // 你的“正文段落”
 			"view_count": article.ViewCount,
-			"author_id":  article.AuthorID,
+			"author_id":  strconv.FormatUint(article.AuthorID, 10),
 			"created_at": article.CreatedAt.Format("2006-01-02 15:04:05"),
 			"tags":       article.Tags,
 		},

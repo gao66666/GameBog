@@ -13,6 +13,7 @@ import (
 
 func main() {
 	//1 初始化配置
+	fmt.Printf("starting init!")
 	if err := setting.Init("./setting/common.yaml"); err != nil {
 		panic("Config load error")
 	}

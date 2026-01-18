@@ -19,3 +19,13 @@ type ArticleHandler struct {
 func NewArticleHandler(serve *service.ArticleService) *ArticleHandler {
 	return &ArticleHandler{se: serve}
 }
+
+type CommentHandler struct {
+	se *service.CommentService
+}
+
+func NewCommentHandler(serve *service.CommentService) *CommentHandler {
+	return &CommentHandler{se: serve}
+}
+
+
