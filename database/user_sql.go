@@ -66,3 +66,15 @@ func (r *UserRepository) UpdateUser(userID uint64, data map[string]interface{}) 
 	// 只有传入的 map 中存在的 key，SQL 才会更新对应的列
 	return r.db.Model(&models.User{}).Where("id = ?", userID).Updates(data).Error
 }
+
+func (r *UserRepository) IncrementFollowingCount(userID uint64) error {
+	return r.db.Model(&models.User{}).
+		Where("id = ?", userID).
+		Update("following_count", gorm.Expr("following_count + 1")).Error
+}
+
+func (r *UserRepository) IncrementFollowerCount(userID uint64) error {
+	return r.db.Model(&models.User{}).
+		Where("id = ?", userID).
+		Update("follower_count", gorm.Expr("follower_count + 1")).Error
+}

@@ -52,8 +52,19 @@ func (r *ArticleRepository) GetArticleByID(id uint64) (*models.Article, error) {
 	return &article, nil
 }
 
-func (r *ArticleRepository) IncrementViewCount(id uint64) error {
-	return r.db.Model(&models.Article{}).Where("id = ?", id).Update("view_count", gorm.Expr("view_count + ?", 1)).Error
+func (r *ArticleRepository) IncrementViewCount(id uint64, count int64) error {
+	// 使用 UpdateColumn 的好处：它不会触发 GORM 的 BeforeUpdate 等钩子，执行效率更高
+	return r.db.Model(&models.Article{}).
+		Where("id = ?", id).
+		UpdateColumn("view_count", gorm.Expr("view_count + ?", count)).
+		Error
+}
+
+func (r *ArticleRepository) IncrementLikeCount(id uint64, count int64) error {
+	return r.db.Model(&models.Article{}).
+		Where("id = ?", id).
+		UpdateColumn("like_count", gorm.Expr("like_count + ?", count)).
+		Error
 }
 
 func (r *ArticleRepository) GetArticleList(authorID uint64, page int, size int) ([]*models.Article, int64, error) {
@@ -96,4 +107,7 @@ func (r *ArticleRepository) DeleteArticle(articleID uint64, userID uint64) error
 	}
 
 	return nil
+}
+func (r *ArticleRepository) GetArticlesByIDs(ids []uint64, articles *[]*models.Article) error {
+	return r.db.Where("id IN ?", ids).Find(articles).Error
 }

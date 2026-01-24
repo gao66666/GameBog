@@ -26,6 +26,22 @@ func NewBizError(httpCode, bizCode int, msg string) *BizError {
 		Message:  msg,
 	}
 }
+func ResponseSuccess(c *gin.Context, data interface{}, msg ...string) {
+	message := "success"
+	if len(msg) > 0 {
+		message = msg[0]
+	}
+
+	c.JSON(200, gin.H{
+		"code": 0,
+		"msg":  message,
+		"data": data,
+	})
+}
+
+func ResponseErrorWithMsg(c *gin.Context, msg string) {
+	c.JSON(400, gin.H{"error": msg})
+}
 
 func ResponseError(c *gin.Context, err error) {
 	if err == nil {

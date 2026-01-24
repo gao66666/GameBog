@@ -7,10 +7,10 @@ import (
 
 type CommentService struct {
 	commentRepo *database.CommentRepository
-	redisRepo   *database.RedisRepository
+	redisRepo   *database.RedisCommentRepository
 }
 
-func NewCommentService(dataRepo *database.CommentRepository, rs *database.RedisRepository) *CommentService {
+func NewCommentService(dataRepo *database.CommentRepository, rs *database.RedisCommentRepository) *CommentService {
 	return &CommentService{
 		commentRepo: dataRepo,
 		redisRepo:   rs,

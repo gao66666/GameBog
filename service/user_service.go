@@ -12,14 +12,12 @@ import (
 	"gorm.io/gorm"
 )
 
-
-
 type UserService struct {
 	userRepo  *database.UserRepository
-	redisRepo *database.RedisRepository
+	redisRepo *database.RedisUserRepository
 }
 
-func NewUserService(dataRepo *database.UserRepository, rs *database.RedisRepository) *UserService {
+func NewUserService(dataRepo *database.UserRepository, rs *database.RedisUserRepository) *UserService {
 	return &UserService{
 		userRepo:  dataRepo,
 		redisRepo: rs,

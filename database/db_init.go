@@ -2,22 +2,12 @@ package database
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/gao66666/GoBlog/setting"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
-
-var db *gorm.DB
-
-type DataDriver struct {
-	mysqlRepo *UserRepository //存储用户的相关数据
-	redisRepo *RedisRepository
-}
-
-func NewDataDriver(mysqlRepo *UserRepository, redisRepo *RedisRepository) *DataDriver {
-	return &DataDriver{mysqlRepo: mysqlRepo, redisRepo: redisRepo}
-}
 
 type Repository struct {
 	db *gorm.DB
@@ -28,37 +18,31 @@ func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
 }
 
-func MysqlInit(cfg *setting.MySQLConfig) (*UserRepository, *ArticleRepository,*CommentRepository) {
+var DB *gorm.DB
+
+func MysqlInit(cfg *setting.MySQLConfig) *gorm.DB {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.DB)
 
-	// 连接数据库
 	var err error
-	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	// 使用连接池配置来优化性能
+	instance, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
+		// 可以在这里增加一些全局配置，比如禁用外键约束等
+		DisableForeignKeyConstraintWhenMigrating: true,
+	})
+
 	if err != nil {
 		panic("连接数据库失败: " + err.Error())
 	}
-	fmt.Println("数据库连接成功")
 
-	// 1 创建UserRepository
-	userRepo := NewUserRepository(db)
-	err = userRepo.InitTable()
-	if err != nil {
-		panic("初始化用户表失败: " + err.Error())
-	}
-	// 2 创建ArticleRepository
-	articleRepo := NewArticleRepository(db)
-	err = articleRepo.InitTable()
-	if err != nil {
-		panic("初始化文章表失败: " + err.Error())
-	}
-	// 3 创建CommentRepository
-	commentRepo:=NewCommentRepository(db)
-	err=commentRepo.InitTable()
-	if err!=nil{
-		panic("初始化评论数据库失败"+err.Error())
-	}
+	// 设置连接池参数（大厂必备，防止连接数爆炸或失效）
+	sqlDB, _ := instance.DB()
+	sqlDB.SetMaxIdleConns(10)           // 最大空闲连接
+	sqlDB.SetMaxOpenConns(100)          // 最大打开连接
+	sqlDB.SetConnMaxLifetime(time.Hour) // 连接最长存活时间
 
-	fmt.Println("数据库初始化测试完成!")
-	return userRepo, articleRepo,commentRepo
+	fmt.Println("✅ 数据库连接成功")
+
+	DB = instance
+	return instance
 }

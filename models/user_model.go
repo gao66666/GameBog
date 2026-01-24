@@ -1,6 +1,8 @@
 package models
 
 import (
+	"time"
+
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -12,7 +14,8 @@ type User struct {
 	Password       string `gorm:"column:password;size:255"`
 	Avatar         string `gorm:"column:avatar"`          // 头像链接
 	FollowingCount uint64 `gorm:"column:following_count"` // 被多少人关注
-	FollowerCount  uint64 `gorm:"column:follower_count"`  //关注了多少人
+	// FollowerCount  uint64 `gorm:"column:follower_count"`  //关注了多少人
+	CreatedAt time.Time
 }
 
 // ParamSignUp 注册请求参数

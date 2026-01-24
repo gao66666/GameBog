@@ -15,17 +15,37 @@ var (
 )
 
 // RedisRepository Redis操作封装
-type RedisRepository struct {
+type RedisArticleRepository struct {
+	client *redis.Client
+}
+type RedisUserRepository struct {
+	client *redis.Client
+}
+type RedisCommentRepository struct {
+	client *redis.Client
+}
+type RedisFollowRepository struct {
 	client *redis.Client
 }
 
-// NewRedisRepository 创建RedisRepository实例
-func NewRedisRepository(client *redis.Client) *RedisRepository {
-	return &RedisRepository{client: client}
+func NewRedisArticleRepository(client *redis.Client) *RedisArticleRepository {
+	return &RedisArticleRepository{client: client}
+}
+
+func NewRedisUserRepository(client *redis.Client) *RedisUserRepository {
+	return &RedisUserRepository{client: client}
+}
+
+func NewRedisCommentRepository(client *redis.Client) *RedisCommentRepository {
+	return &RedisCommentRepository{client: client}
+}
+
+func NewRedisFollowRepository(client *redis.Client) *RedisFollowRepository {
+	return &RedisFollowRepository{client: client}
 }
 
 // Init 初始化Redis连接
-func RedisInit(cfg *setting.RedisConfig) (*RedisRepository, error) {
+func RedisInit(cfg *setting.RedisConfig) (*redis.Client, error) {
 	client = redis.NewClient(&redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Password: cfg.Password,
@@ -39,29 +59,16 @@ func RedisInit(cfg *setting.RedisConfig) (*RedisRepository, error) {
 
 	_, err := client.Ping(testCtx).Result()
 	if err != nil {
-		return nil, fmt.Errorf("redis连接失败: %v", err)
+		return nil, err
 	}
 
-	return NewRedisRepository(client), nil
+	return client, err
 }
 
 // Close 关闭连接
-func (r *RedisRepository) Close() error {
+func (r *RedisArticleRepository) Close() error {
 	if r.client != nil {
 		return r.client.Close()
 	}
 	return nil
-}
-
-// 封装常用操作
-func (r *RedisRepository) Get(key string) (string, error) {
-	return r.client.Get(ctx, key).Result()
-}
-
-func (r *RedisRepository) Set(key string, value interface{}, expiration time.Duration) error {
-	return r.client.Set(ctx, key, value, expiration).Err()
-}
-
-func (r *RedisRepository) Del(key string) error {
-	return r.client.Del(ctx, key).Err()
 }

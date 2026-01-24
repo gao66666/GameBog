@@ -3,6 +3,11 @@ package service
 import "github.com/gao66666/GoBlog/tool"
 
 var (
+	ErrNullParamFollow = tool.NewBizError(404, 40003, "follower_id 和 following_id 不能为空")
+	ErrFollowSelf      = tool.NewBizError(404, 40003, "不能关注自己")
+	ErrDoubleFollow    = tool.NewBizError(404, 40003, "不能重复关注")
+	ErrFollow          = tool.NewBizError(404, 40003, "关注失败")
+	ErrUpdateUserCount = tool.NewBizError(404, 40006, "更新关注数量失败")
 	// --- 业务错误 (400 Range) ---
 	ErrUserNotFound       = tool.NewBizError(404, 40001, "用户不存在")
 	ErrUserAlreadyExists  = tool.NewBizError(400, 40002, "该电话号码已经被注册")

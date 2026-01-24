@@ -1,0 +1,39 @@
+version: '3.8'
+services:
+  # Redis: 负责排行榜、点赞计数和 Asynq 任务存储
+  redis:
+    image: redis:7-alpine
+    container_name: blog-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+
+  # NSQ 查找服务: 内部协调
+  nsqlookupd:
+    image: nsqio/nsq
+    container_name: blog-nsqlookupd
+    command: /nsqlookupd
+    ports:
+      - "4160:4160"
+      - "4161:4161"
+
+  # NSQ 消息节点: 处理点赞、阅读量流量
+  nsqd:
+    image: nsqio/nsq
+    container_name: blog-nsqd
+    command: /nsqd --lookupd-tcp-address=nsqlookupd:4160 --broadcast-address=127.0.0.1
+    depends_on:
+      - nsqlookupd
+    ports:
+      - "4150:4150"
+      - "4151:4151"
+
+  # NSQ 监控界面: 浏览器访问 http://127.0.0.1:4171
+  nsqadmin:
+    image: nsqio/nsq
+    container_name: blog-nsqadmin
+    command: /nsqadmin --lookupd-http-address=nsqlookupd:4161
+    depends_on:
+      - nsqlookupd
+    ports:
+      - "4171:4171"

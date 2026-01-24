@@ -5,6 +5,7 @@ import (
 
 	"github.com/gao66666/GoBlog/database"
 	"github.com/gao66666/GoBlog/logger"
+	"github.com/gao66666/GoBlog/mq"
 	"github.com/gao66666/GoBlog/router"
 	"github.com/gao66666/GoBlog/setting"
 	"github.com/gao66666/GoBlog/tool"
@@ -31,12 +32,18 @@ func main() {
 	}
 
 	//初始化 Redis
-	redisRepo, err := database.RedisInit(setting.Conf.RedisConfig)
+	redisClient, err := database.RedisInit(setting.Conf.RedisConfig)
 	if err != nil {
 		panic("Redis init error")
 	}
-	defer redisRepo.Close()
-	r := router.RouterInit(setting.Conf.Mode, redisRepo)
+	defer redisClient.Close()
+
+	db_client := database.MysqlInit(setting.Conf.MySQLConfig)
+	app := router.SetupApp(db_client, redisClient)
+	r := router.RouterInit(setting.Conf.Mode, app)
+
+	mq.InitNSQ("127.0.0.1:4150", db_client, redisClient)
+	defer mq.Close()
 
 	// 4. 启动服务
 	err = r.Run(fmt.Sprintf(":%d", setting.Conf.Port))

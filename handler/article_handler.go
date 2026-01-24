@@ -10,12 +10,6 @@ import (
 	"go.uber.org/zap"
 )
 
-var (
-	ErrCodeInvalidParam = tool.NewBizError(404, 40001, "不正确的参数")
-	ErrInvalidToken     = tool.NewBizError(404, 40001, "过期token")
-	CodeServerBusy      = tool.NewBizError(404, 40001, "服务器繁忙")
-)
-
 func (h *ArticleHandler) CreateArticleHandle(c *gin.Context) {
 	// 1. 获取参数
 	p := new(models.ParamPostArticle)
@@ -42,7 +36,7 @@ func (h *ArticleHandler) CreateArticleHandle(c *gin.Context) {
 		Summary:    p.Content, // 自动截取正文前100字作为摘要
 		AuthorID:   userID.(uint64),
 		CategoryID: p.CategoryID, // 保持命名统一
-	}		
+	}
 
 	if err := h.se.CreateArticle(article); err != nil {
 		tool.ResponseError(c, CodeServerBusy)
@@ -65,7 +59,7 @@ func (h *ArticleHandler) ReadArticleHandle(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"msg": "文章不存在或已被删除"})
 		return
 	}
-	
+
 	//这里应该是将数据传给前端进行展示的
 	c.JSON(http.StatusOK, gin.H{
 		"msg": "查询成功",
@@ -130,4 +124,26 @@ func (h *ArticleHandler) DeleteArticleHandle(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"msg": "删除成功"})
+}
+
+func (h *ArticleHandler) LikeArticleHandle(c *gin.Context) {
+	var req struct {
+		ArticleID uint64 `json:"article_id" binding:"required"`
+		IsCancel  bool   `json:"is_cancel"` // false为点赞，true为取消点赞
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "参数错误"})
+		return
+	}
+
+	// 调用 Service 发送 NSQ 消息，实现异步处理
+	err := h.se.LikeArticle(req.ArticleID, req.IsCancel)
+	if err != nil {
+		zap.L().Error("点赞失败", zap.Error(err))
+		c.JSON(500, gin.H{"error": "操作失败"})
+		return
+	}
+
+	c.JSON(200, gin.H{"msg": "操作已接收"})
 }

@@ -10,7 +10,7 @@ type Follow struct {
 	// 被关注的人
 	FollowingID uint64 `gorm:"uniqueIndex:idx_follow_unique;index:idx_following"`
 	// 关注时间
-	CreatedAt time.Time `json:"created_at"`
+	CreatedAt time.Time
 }
 
 type ParamFollow struct {

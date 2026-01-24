@@ -24,11 +24,11 @@ type Comment struct {
 	ParentID    uint64 `gorm:"not null;default:0"`
 	ReplyUserID uint64 `gorm:"not null;default:0"`
 
-	Content   string    `gorm:"type:text;not null"`
-	LikeCount uint32    `gorm:"index:idx_art_root_like_id,priority:3;default:0"`
-	CreatedAt time.Time `gorm:"autoCreateTime"`
-	User      User      `gorm:"foreignKey:UserID;references:ID"`
-	ReplyUser User      `gorm:"foreignKey:ReplyUserID;references:ID"`
+	Content   string `gorm:"type:text;not null"`
+	LikeCount uint32 `gorm:"index:idx_art_root_like_id,priority:3;default:0"`
+	User      User   `gorm:"foreignKey:UserID;references:ID"`
+	ReplyUser User   `gorm:"foreignKey:ReplyUserID;references:ID"`
+	CreatedAt time.Time
 }
 
 // 发给前端评论区的用户结构体

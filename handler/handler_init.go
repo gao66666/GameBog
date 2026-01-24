@@ -28,4 +28,10 @@ func NewCommentHandler(serve *service.CommentService) *CommentHandler {
 	return &CommentHandler{se: serve}
 }
 
+type FollowHandler struct {
+	se *service.FollowService
+}
 
+func NewFollowHandler(serve *service.FollowService) *FollowHandler {
+	return &FollowHandler{se: serve}
+}
