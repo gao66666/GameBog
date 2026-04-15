@@ -24,4 +24,8 @@ var (
 	ErrDataInsert    = tool.NewBizError(500, 50004, "数据库写入异常")
 	ErrHashGenerate  = tool.NewBizError(500, 50005, "密码加密失败")
 	ErrGetRootIDS    = tool.NewBizError(500, 50006, "rootids获取失败")
+
+	// 评论相关
+	ErrCommentNotFound      = tool.NewBizError(404, 40011, "评论不存在")
+	ErrCommentNoPermission  = tool.NewBizError(403, 40012, "无权限操作该评论")
 )

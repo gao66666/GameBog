@@ -1,19 +1,101 @@
 package handler
 
 import (
-	"net/http"
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"strconv"
+	"strings"
+	"time"
 
+	"github.com/gao66666/GoBlog/jwt_module"
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/tool"
 	"github.com/gin-gonic/gin"
+	"github.com/yuin/goldmark"
 	"go.uber.org/zap"
 )
+
+const anonSessionCookieName = "gb_sid"
+
+func normalizeTagNames(in []string) ([]string, bool) {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, raw := range in {
+		t := strings.TrimSpace(raw)
+		if t == "" {
+			continue
+		}
+		// 与 models.Tag 的 size:50 保持一致（按 rune 粗略限制）
+		if len([]rune(t)) > 50 {
+			return nil, false
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+		if len(out) > 5 {
+			return nil, false
+		}
+	}
+	return out, true
+}
+
+func ensureAnonSessionID(c *gin.Context) (string, error) {
+	if sid, err := c.Cookie(anonSessionCookieName); err == nil {
+		if sid != "" {
+			return sid, nil
+		}
+	}
+
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	sid := hex.EncodeToString(b)
+	// 30 天
+	c.SetCookie(anonSessionCookieName, sid, int((30 * 24 * time.Hour).Seconds()), "/", "", false, true)
+	return sid, nil
+}
+
+// resolveActorKey 优先使用登录用户维度（更稳定），匿名用户回退到会话维度（cookie）。
+func resolveActorKey(c *gin.Context) string {
+	// 1) 兼容：若未来把阅读接口移入鉴权组，这里可以直接从 context 取 userID
+	if uid, ok := c.Get("userID"); ok {
+		if u, ok := uid.(uint64); ok && u != 0 {
+			return "u:" + strconv.FormatUint(u, 10)
+		}
+	}
+
+	// 2) 公共接口：尝试从 Authorization Bearer token 解析用户
+	auth := c.GetHeader("Authorization")
+	if auth != "" {
+		parts := strings.SplitN(auth, " ", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+			if claims, err := jwt_module.ParseToken(parts[1]); err == nil && claims != nil && claims.UserID != 0 {
+				return "u:" + strconv.FormatUint(claims.UserID, 10)
+			}
+		}
+	}
+
+	// 3) 匿名：按会话去重（避免 NAT/IP 误伤）
+	if sid, err := ensureAnonSessionID(c); err == nil && sid != "" {
+		return "s:" + sid
+	}
+	return "anonymous"
+}
 
 func (h *ArticleHandler) CreateArticleHandle(c *gin.Context) {
 	// 1. 获取参数
 	p := new(models.ParamPostArticle)
 	if err := c.ShouldBindJSON(p); err != nil {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	tagNames, ok := normalizeTagNames(p.Tags)
+	if !ok {
 		tool.ResponseError(c, ErrCodeInvalidParam)
 		return
 	}
@@ -37,6 +119,12 @@ func (h *ArticleHandler) CreateArticleHandle(c *gin.Context) {
 		AuthorID:   userID.(uint64),
 		CategoryID: p.CategoryID, // 保持命名统一
 	}
+	if len(tagNames) > 0 {
+		article.Tags = make([]models.Tag, 0, len(tagNames))
+		for _, n := range tagNames {
+			article.Tags = append(article.Tags, models.Tag{Name: n})
+		}
+	}
 
 	if err := h.se.CreateArticle(article); err != nil {
 		tool.ResponseError(c, CodeServerBusy)
@@ -44,6 +132,52 @@ func (h *ArticleHandler) CreateArticleHandle(c *gin.Context) {
 	}
 
 	zap.L().Info("创建文章成功")
+	tool.ResponseSuccess(c, gin.H{"article_id": article.ID}, "创建文章成功")
+}
+
+func (h *ArticleHandler) UpdateArticleHandle(c *gin.Context) {
+	// 文章 ID 从路径获取
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil || id == 0 {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	// 当前用户
+	uid, ok := c.Get("userID")
+	if !ok {
+		tool.ResponseError(c, ErrInvalidToken)
+		return
+	}
+	userID := uid.(uint64)
+
+	var body struct {
+		Title   string   `json:"title"`
+		Content string   `json:"content"`
+		Tags    []string `json:"tags"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	if strings.TrimSpace(body.Title) == "" || strings.TrimSpace(body.Content) == "" {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	tagNames, ok := normalizeTagNames(body.Tags)
+	if !ok {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	if err := h.se.UpdateArticle(userID, id, body.Title, body.Content, tagNames); err != nil {
+		tool.ResponseError(c, CodeServerBusy)
+		return
+	}
+
+	tool.ResponseSuccess(c, gin.H{"article_id": idStr}, "更新文章成功")
 }
 
 func (h *ArticleHandler) ReadArticleHandle(c *gin.Context) {
@@ -51,29 +185,37 @@ func (h *ArticleHandler) ReadArticleHandle(c *gin.Context) {
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
 		zap.L().Error("没有有效参数")
+		tool.ResponseError(c, ErrCodeInvalidParam)
 		return
 	}
-	article, err := h.se.GetArticle(id)
+	actorKey := resolveActorKey(c)
+	article, err := h.se.ReadArticle(id, actorKey)
 	if err != nil {
 		zap.L().Error("GetArticleDetail failed", zap.Error(err))
-		c.JSON(http.StatusNotFound, gin.H{"msg": "文章不存在或已被删除"})
+		tool.ResponseErrorWithMsg(c, "文章不存在或已被删除")
 		return
 	}
 
-	//这里应该是将数据传给前端进行展示的
-	c.JSON(http.StatusOK, gin.H{
-		"msg": "查询成功",
-		"data": gin.H{
-			"article_id": idStr,
-			"title":      article.Title,
-			"summary":    article.Summary,
-			"content":    article.Content, // 你的“正文段落”
-			"view_count": article.ViewCount,
-			"author_id":  strconv.FormatUint(article.AuthorID, 10),
-			"created_at": article.CreatedAt.Format("2006-01-02 15:04:05"),
-			"tags":       article.Tags,
-		},
-	})
+	// Markdown 渲染（禁止原始 HTML，避免 XSS）
+	var htmlBuf bytes.Buffer
+	if err := goldmark.New(
+		goldmark.WithParserOptions(),
+	).Convert([]byte(article.Content), &htmlBuf); err != nil {
+		zap.L().Warn("render markdown failed", zap.Error(err))
+	}
+
+	tool.ResponseSuccess(c, gin.H{
+		"article_id":   idStr,
+		"title":        article.Title,
+		"summary":      article.Summary,
+		"content":      article.Content,
+		"html_content": htmlBuf.String(),
+		"view_count":   article.ViewCount,
+		"like_count":   article.LikeCount,
+		"author_id":    strconv.FormatUint(article.AuthorID, 10),
+		"created_at":   article.CreatedAt.Format("2006-01-02 15:04:05"),
+		"tags":         article.Tags,
+	}, "查询成功")
 }
 
 func (h *ArticleHandler) GetArticleListHandler(c *gin.Context) {
@@ -92,17 +234,81 @@ func (h *ArticleHandler) GetArticleListHandler(c *gin.Context) {
 	list, total, err := h.se.GetArticleList(authorID, page, size)
 	if err != nil {
 		zap.L().Error("GetArticleList failed", zap.Error(err))
-		c.JSON(http.StatusNotFound, gin.H{"msg": "文章列表不存在或已被删除"})
+		tool.ResponseErrorWithMsg(c, "文章列表不存在或已被删除")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"msg": "查询成功",
-		"data": gin.H{
-			"article_list": list,
-			"total":        total,
-		},
-	})
+	tool.ResponseSuccess(c, gin.H{"article_list": list, "total": total}, "查询成功")
 
+}
+
+// GetLatestArticlesPublic 提供给首页使用的公开文章列表（按创建时间倒序）。
+func (h *ArticleHandler) GetLatestArticlesPublic(c *gin.Context) {
+	authorIDStr := c.Query("author_id")
+	pageStr := c.DefaultQuery("page", "1")
+	sizeStr := c.DefaultQuery("size", "10")
+
+	authorID, _ := strconv.ParseUint(authorIDStr, 10, 64)
+	page, _ := strconv.Atoi(pageStr)
+	size, _ := strconv.Atoi(sizeStr)
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 10
+	}
+
+	list, total, err := h.se.GetArticleList(authorID, page, size)
+	if err != nil {
+		zap.L().Error("GetLatestArticlesPublic failed", zap.Error(err))
+		tool.ResponseErrorWithMsg(c, "文章列表不存在或已被删除")
+		return
+	}
+
+	tool.ResponseSuccess(c, gin.H{"article_list": list, "total": total}, "查询成功")
+}
+
+// GetArticleListPublic 公开文章列表（支持按作者筛选），用于个人中心“我的文章”分页等场景。
+func (h *ArticleHandler) GetArticleListPublic(c *gin.Context) {
+	authorIDStr := c.Query("author_id")
+	pageStr := c.DefaultQuery("page", "1")
+	sizeStr := c.DefaultQuery("size", "10")
+
+	authorID, _ := strconv.ParseUint(authorIDStr, 10, 64)
+	page, _ := strconv.Atoi(pageStr)
+	size, _ := strconv.Atoi(sizeStr)
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 10
+	}
+
+	list, total, err := h.se.GetArticleList(authorID, page, size)
+	if err != nil {
+		zap.L().Error("GetArticleListPublic failed", zap.Error(err))
+		tool.ResponseErrorWithMsg(c, "文章列表不存在或已被删除")
+		return
+	}
+	tool.ResponseSuccess(c, gin.H{"article_list": list, "total": total}, "查询成功")
+}
+
+// GetArticleLeaderboardPublic 提供给首页使用的排行榜（默认阅读榜）。
+// type=view|like
+func (h *ArticleHandler) GetArticleLeaderboardPublic(c *gin.Context) {
+	actionType := c.DefaultQuery("type", "view")
+	if actionType != "view" && actionType != "like" {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	list, err := h.se.GetLeaderboard(actionType)
+	if err != nil {
+		zap.L().Error("GetArticleLeaderboardPublic failed", zap.Error(err))
+		tool.ResponseErrorWithMsg(c, "排行榜暂不可用")
+		return
+	}
+
+	tool.ResponseSuccess(c, gin.H{"type": actionType, "article_list": list}, "查询成功")
 }
 func (h *ArticleHandler) DeleteArticleHandle(c *gin.Context) {
 	// 1. 获取文章 ID
@@ -113,37 +319,65 @@ func (h *ArticleHandler) DeleteArticleHandle(c *gin.Context) {
 	// 假设你在中间件里用的 Key 是 "userID"
 	currUserID, exists := c.Get("userID")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"msg": "未登录"})
+		tool.ResponseError(c, ErrInvalidToken)
 		return
 	}
 
 	// 3. 传给 Service，让 Service 确认这个文章是不是这个人的
 	if err := h.se.DeleteArticle(currUserID.(uint64), id); err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"msg": "权限不足或删除失败"})
+		tool.ResponseErrorWithMsg(c, "权限不足或删除失败")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"msg": "删除成功"})
+	tool.ResponseSuccess(c, nil, "删除成功")
 }
 
 func (h *ArticleHandler) LikeArticleHandle(c *gin.Context) {
-	var req struct {
-		ArticleID uint64 `json:"article_id" binding:"required"`
-		IsCancel  bool   `json:"is_cancel"` // false为点赞，true为取消点赞
+	// 兼容前端传字符串或数字形式的 article_id
+	var raw struct {
+		ArticleID interface{} `json:"article_id"`
+		IsCancel  bool        `json:"is_cancel"` // false为点赞，true为取消点赞
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "参数错误"})
+	if err := c.ShouldBindJSON(&raw); err != nil {
+		tool.ResponseError(c, ErrCodeInvalidParam)
 		return
 	}
 
-	// 调用 Service 发送 NSQ 消息，实现异步处理
-	err := h.se.LikeArticle(req.ArticleID, req.IsCancel)
+	// 提取并解析 article_id
+	var articleID uint64
+	switch v := raw.ArticleID.(type) {
+	case string:
+		id, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64)
+		if err != nil || id == 0 {
+			tool.ResponseError(c, ErrCodeInvalidParam)
+			return
+		}
+		articleID = id
+	case float64:
+		if v <= 0 {
+			tool.ResponseError(c, ErrCodeInvalidParam)
+			return
+		}
+		articleID = uint64(v)
+	default:
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	userID, exists := c.Get("userID")
+	if !exists {
+		tool.ResponseError(c, ErrInvalidToken)
+		return
+	}
+
+	// 先写幂等key，再投递NSQ，消费者批量刷新MySQL
+	err := h.se.LikeArticle(articleID, userID.(uint64), raw.IsCancel)
 	if err != nil {
 		zap.L().Error("点赞失败", zap.Error(err))
-		c.JSON(500, gin.H{"error": "操作失败"})
+		tool.ResponseError(c, CodeServerBusy)
 		return
 	}
 
-	c.JSON(200, gin.H{"msg": "操作已接收"})
+	tool.ResponseSuccess(c, nil, "操作已接收")
 }

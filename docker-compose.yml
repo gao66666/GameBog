@@ -1,12 +1,63 @@
 version: '3.8'
 services:
-  # Redis: 负责排行榜、点赞计数和 Asynq 任务存储
+  # MySQL: 博客主库
+  mysql:
+    image: mysql:8.0
+    container_name: blog-mysql
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=123456
+      - MYSQL_DATABASE=goblog
+      # 如需单独业务账号，可额外设置：
+      # - MYSQL_USER=goblog
+      # - MYSQL_PASSWORD=your-password
+    command: [ "mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci" ]
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  # Redis: 负责排行榜、点赞计数、缓存
   redis:
     image: redis:7-alpine
     container_name: blog-redis
     ports:
       - "6379:6379"
     command: redis-server --appendonly yes
+
+  # Kafka: 替代 Asynq，用于通知推送/搜索同步等异步任务
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: blog-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://127.0.0.1:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+  # Elasticsearch: 替代 Meilisearch
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    container_name: blog-elasticsearch
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
 
   # NSQ 查找服务: 内部协调
   nsqlookupd:
@@ -37,3 +88,8 @@ services:
       - nsqlookupd
     ports:
       - "4171:4171"
+
+volumes:
+  mysql_data:
+  kafka_data:
+  es_data:

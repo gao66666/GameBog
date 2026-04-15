@@ -2,6 +2,7 @@ package mq
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"time"
 
@@ -21,10 +22,9 @@ func InitNSQ(addr string, db *gorm.DB, rdb *redis.Client) {
 
 	// 2. 注册：统计业务消费者 (处理点赞、阅读量)
 	articleRepo := database.NewArticleRepository(db)
-	articleRedis := database.NewRedisArticleRepository(rdb)
 
 	// 3. 初始化 Worker
-	worker := NewStatsWorker(articleRepo, articleRedis)
+	worker := NewStatsWorker(articleRepo)
 	worker.StartFlushTicks()
 
 	// 4. 注册消费者
@@ -91,7 +91,7 @@ func registerConsumer(addr, topic, channel string, handler nsq.Handler) {
 func Publish(topic string, data interface{}) error {
 	if producer == nil {
 		log.Println(" NSQ 生产者未初始化")
-		return nil
+		return errors.New("nsq producer is not initialized")
 	}
 
 	// 序列化消息体
@@ -116,7 +116,7 @@ func PublishAction(msg ArticleActionMsg) error {
 }
 
 // Close 优雅关闭连接
-func Close() {
+func CloseNsq() {
 	if producer != nil {
 		log.Println(" 正在关闭 NSQ 生产者...")
 		producer.Stop()

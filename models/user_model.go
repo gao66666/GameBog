@@ -27,7 +27,7 @@ type ParamSignUp struct {
 
 // ParamLogin 登录请求参数
 type ParamLogin struct {
-	UserID   uint64 `json:"userid" binding:"required"`
+	Tel      string `json:"tel" binding:"required"`
 	PassWord string `json:"password" binding:"required"`
 }
 

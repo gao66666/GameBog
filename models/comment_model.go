@@ -46,5 +46,6 @@ type CommentVO struct {
 	ReplyUser *CommentUser `json:"replyUser,omitempty"`
 	Content   string       `json:"content"`
 	LikeCount uint32       `json:"likeCount"` // 统一小驼峰
+	CreatedAt time.Time    `json:"createdAt"`
 	Children  []*CommentVO `json:"children,omitempty"`
 }

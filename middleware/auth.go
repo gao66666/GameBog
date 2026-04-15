@@ -23,7 +23,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 		// 2. 按空格拆分，检查 Bearer 格式
 		parts := strings.SplitN(authHeader, " ", 2)
 		if !(len(parts) == 2 && parts[0] == "Bearer") {
-			c.JSON(401, "不合法Token")
+			tool.ResponseError(c, jwt_module.ErrInvalidToken)
 			c.Abort()
 			return
 		}
@@ -33,10 +33,8 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 		if err != nil {
 			// 根据错误类型返回对应的业务错误
 			if errors.Is(err, jwt_module.ErrExpiredToken) {
-				c.JSON(401, "过期Token")
 				tool.ResponseError(c, jwt_module.ErrExpiredToken)
 			} else {
-				c.JSON(401, "不合法Token")
 				tool.ResponseError(c, jwt_module.ErrInvalidToken)
 			}
 			c.Abort()

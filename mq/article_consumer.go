@@ -17,19 +17,16 @@ type StatsWorker struct {
 	likeBuffer    map[uint64]int
 	flushInterval time.Duration
 
-	// 注入两个 Repo，一个负责实时，一个负责持久化
-	redisRepo *database.RedisArticleRepository // 处理 Redis 实时计数
-	articleDB *database.ArticleRepository      // 处理 MySQL 批量落库
+	articleDB *database.ArticleRepository // 仅处理 MySQL 批量落库
 }
 
-// 传入两个依赖：mysqlRepo 负责数据库，redisRepo 负责缓存
-func NewStatsWorker(mysqlRepo *database.ArticleRepository, redisRepo *database.RedisArticleRepository) *StatsWorker {
+// 传入依赖：mysqlRepo 负责数据库
+func NewStatsWorker(mysqlRepo *database.ArticleRepository) *StatsWorker {
 	return &StatsWorker{
 		viewBuffer:    make(map[uint64]int),
 		likeBuffer:    make(map[uint64]int),
 		flushInterval: 1 * time.Minute,
 		articleDB:     mysqlRepo, // 对应 MySQL
-		redisRepo:     redisRepo, // 对应 Redis
 	}
 }
 
@@ -40,28 +37,35 @@ func (w *StatsWorker) HandleMessage(m *nsq.Message) error {
 
 	var msg ArticleActionMsg
 	if err := json.Unmarshal(m.Body, &msg); err != nil {
-		zap.L().Error("解析NSQ消息失败", zap.Error(err))
+		zap.L().Error("解析NSQ消息失败，视为脏消息直接确认丢弃", zap.Error(err))
 		return nil
 	}
 
-	// --- 第一步：实时更新 Redis (不在锁内) ---
-	// 理由：Redis 操作涉及网络 IO，如果放在锁里，并发高时会拖慢整个 Worker 的速度
-	field := "view"
-	if msg.Type == "like" {
-		field = "like"
+	if msg.ArticleID == 0 {
+		zap.L().Warn("NSQ消息缺少article_id，直接丢弃")
+		return nil
 	}
-	// 调用你刚写的 RedisRepo 方法
-	_ = w.redisRepo.IncrStats(msg.ArticleID, field)
-	_ = w.redisRepo.UpdateLeaderboard(msg.ArticleID, msg.Type)
-	// --- 第二步：内存 Map 聚合 (加锁) ---
-	w.mu.Lock()
+
+	var likeDelta int
 	switch msg.Type {
 	case "view":
+		w.mu.Lock()
 		w.viewBuffer[msg.ArticleID]++
+		w.mu.Unlock()
 	case "like":
-		w.likeBuffer[msg.ArticleID]++
+		likeDelta = 1
+	case "unlike":
+		likeDelta = -1
+	default:
+		zap.L().Warn("未知的文章事件类型，直接确认丢弃", zap.String("type", msg.Type))
+		return nil
 	}
-	w.mu.Unlock()
+
+	if msg.Type != "view" {
+		w.mu.Lock()
+		w.likeBuffer[msg.ArticleID] += likeDelta
+		w.mu.Unlock()
+	}
 
 	return nil
 }
@@ -77,38 +81,41 @@ func (w *StatsWorker) StartFlushTicks() {
 }
 
 func (w *StatsWorker) flush() {
-	// 1. 锁操作 (保持不变，很赞)
+	// 1. 锁操作：先拷贝快照，但不立刻清空，只有事务成功后再清空
 	w.mu.Lock()
-	views := w.viewBuffer
-	likes := w.likeBuffer
-	w.viewBuffer = make(map[uint64]int)
-	w.likeBuffer = make(map[uint64]int)
+	views := make(map[uint64]int, len(w.viewBuffer))
+	likes := make(map[uint64]int, len(w.likeBuffer))
+	for id, count := range w.viewBuffer {
+		views[id] = count
+	}
+	for id, count := range w.likeBuffer {
+		likes[id] = count
+	}
 	w.mu.Unlock()
 
 	if len(views) == 0 && len(likes) == 0 {
 		return
 	}
 
-	// 3. 处理阅读量落库
+	if err := w.articleDB.BatchIncrementStats(views, likes); err != nil {
+		zap.L().Warn("统计数据批量落库失败，将保留缓冲区等待下次重试", zap.Error(err))
+		return
+	}
+
+	w.mu.Lock()
 	for aid, count := range views {
-		if count <= 0 {
-			continue
+		w.viewBuffer[aid] -= count
+		if w.viewBuffer[aid] <= 0 {
+			delete(w.viewBuffer, aid)
 		}
-		_ = w.articleDB.IncrementViewCount(aid, int64(count))
 	}
-
-	// 4. 处理点赞数落库
 	for aid, count := range likes {
-		if count <= 0 {
-			continue
+		w.likeBuffer[aid] -= count
+		if w.likeBuffer[aid] <= 0 {
+			delete(w.likeBuffer, aid)
 		}
-		_ = w.articleDB.IncrementLikeCount(aid, int64(count))
 	}
+	w.mu.Unlock()
 
-	// 5. 修剪排行榜 (必须和 UpdateLeaderboard 的 Key 保持一致)
-	// 假设你的 Key 格式是 "article:leaderboard:view"
-	_ = w.redisRepo.TrimLeaderboard("view", 100)
-	_ = w.redisRepo.TrimLeaderboard("like", 100)
-
-	zap.L().Info("统计数据落库及排行榜修剪完成")
+	zap.L().Info("统计数据批量落库完成")
 }

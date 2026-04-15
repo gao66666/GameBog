@@ -31,11 +31,14 @@ func ResponseSuccess(c *gin.Context, data interface{}, msg ...string) {
 	if len(msg) > 0 {
 		message = msg[0]
 	}
+	reqID, _ := c.Get("request_id")
 
 	c.JSON(200, gin.H{
-		"code": 0,
-		"msg":  message,
-		"data": data,
+		"code":       0,
+		"message":    message,
+		"msg":        message,
+		"data":       data,
+		"request_id": reqID,
 	})
 }
 
@@ -47,11 +50,16 @@ func ResponseError(c *gin.Context, err error) {
 	if err == nil {
 		return
 	}
+	reqID, _ := c.Get("request_id")
 
 	var bizErr *BizError
 	if errors.As(err, &bizErr) {
 		// 如果是业务错误，使用其定义的 HttpCode 和内容
-		c.JSON(bizErr.HttpCode, bizErr)
+		c.JSON(bizErr.HttpCode, gin.H{
+			"code":       bizErr.Code,
+			"message":    bizErr.Message,
+			"request_id": reqID,
+		})
 		return
 	}
 
@@ -61,7 +69,8 @@ func ResponseError(c *gin.Context, err error) {
 	)
 
 	c.JSON(http.StatusInternalServerError, gin.H{
-		"code":    50000,
-		"message": "服务器开小差了，请稍后再试",
+		"code":       50000,
+		"message":    "服务器开小差了，请稍后再试",
+		"request_id": reqID,
 	})
 }

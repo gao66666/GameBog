@@ -3,52 +3,22 @@ package main
 import (
 	"fmt"
 
-	"github.com/gao66666/GoBlog/database"
-	"github.com/gao66666/GoBlog/logger"
-	"github.com/gao66666/GoBlog/mq"
-	"github.com/gao66666/GoBlog/router"
-	"github.com/gao66666/GoBlog/setting"
-	"github.com/gao66666/GoBlog/tool"
+	"github.com/gao66666/GoBlog/bootstrap"
 	"go.uber.org/zap"
 )
 
 func main() {
-	//1 初始化配置
-	fmt.Printf("starting init!")
-	if err := setting.Init("./setting/common.yaml"); err != nil {
-		panic("Config load error")
-	}
-	setting.Conf.Mode = "dev"
-
-	//2 初始化日志
-	if err := logger.Init(setting.Conf.LogConfig, setting.Conf.Mode); err != nil {
-		panic("Logger init error")
-	}
-	defer zap.L().Sync()
-
-	//初始化雪花算法节点
-	if err := tool.InitSnowflake(setting.Conf.MachineID); err != nil {
-		panic("雪花算法初始化失败: " + err.Error())
-	}
-
-	//初始化 Redis
-	redisClient, err := database.RedisInit(setting.Conf.RedisConfig)
+	runtime, err := bootstrap.Init("./setting/common.yaml")
 	if err != nil {
-		panic("Redis init error")
+		panic("bootstrap init error: " + err.Error())
 	}
-	defer redisClient.Close()
+	defer runtime.Cleanup()
 
-	db_client := database.MysqlInit(setting.Conf.MySQLConfig)
-	app := router.SetupApp(db_client, redisClient)
-	r := router.RouterInit(setting.Conf.Mode, app)
+	zap.L().Info("Gin HTTP 服务准备就绪", zap.String("addr", runtime.Addr()))
+	fmt.Printf("WebSocket 终端已就绪: ws://localhost%s/ws?token=你的Token\n", runtime.Addr())
 
-	mq.InitNSQ("127.0.0.1:4150", db_client, redisClient)
-	defer mq.Close()
-
-	// 4. 启动服务
-	err = r.Run(fmt.Sprintf(":%d", setting.Conf.Port))
+	err = runtime.Engine.Run(runtime.Addr())
 	if err != nil {
-		panic("Server start error: " + err.Error())
+		zap.L().Fatal("Server 启动失败", zap.Error(err))
 	}
-	zap.L().Info("Init has been finished")
 }

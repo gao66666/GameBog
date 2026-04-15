@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GoBlog - 首页</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container row">
+      <div class="brand"><a href="/">GoBlog</a></div>
+      <form id="searchForm" class="searchbar">
+        <input type="search" id="searchInput" placeholder="搜索文章或用户" />
+        <button type="submit">搜</button>
+      </form>
+      <nav class="nav">
+        <a href="/" id="navHome">首页</a>
+        <a href="/me" id="navMe">个人中心</a>
+        <a href="/login" id="navLogin">登录</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card" id="searchSection" style="display:none">
+      <h2 class="search-title">搜索结果
+        <button type="button" id="searchClose" class="search-close" aria-label="关闭搜索结果">×</button>
+      </h2>
+      <div id="searchMsg" class="muted" style="margin-top:6px"></div>
+      <div id="searchResults" style="margin-top:12px;display:none">
+        <div>
+          <h3>文章</h3>
+          <div id="searchArticles" class="list"></div>
+        </div>
+        <div style="margin-top:12px">
+          <h3>用户</h3>
+          <div id="searchUsers" class="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>阅读榜</h2>
+      <ol id="leaderboard" class="list"></ol>
+      <div class="muted" id="leaderboardEmpty" style="display:none">暂无数据</div>
+    </section>
+
+    <section class="card">
+      <h2>最新博客</h2>
+      <div id="latest" class="list"></div>
+      <div class="muted" id="latestEmpty" style="display:none">暂无文章</div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/search.js"></script>
+  <script src="/static/home.js"></script>
+</body>
+</html>

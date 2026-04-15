@@ -25,8 +25,8 @@ func NewUserService(dataRepo *database.UserRepository, rs *database.RedisUserRep
 }
 
 func (se *UserService) Login(param models.ParamLogin) (*models.User, string, error) {
-	// 1. 查询数据库 (保持不变)
-	user, err := se.userRepo.GetUserByID(param.UserID)
+	// 1. 通过手机号查询用户
+	user, err := se.userRepo.GetUserByTel(param.Tel)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, "", ErrUserNotFound
@@ -82,4 +82,8 @@ func (se *UserService) SignUp(param models.ParamSignUp) (uint64, error) {
 
 func (se *UserService) UpdateUser(userID uint64, data map[string]interface{}) error {
 	return se.userRepo.UpdateUser(userID, data)
+}
+
+func (se *UserService) GetUserByID(userID uint64) (*models.User, error) {
+	return se.userRepo.GetUserByID(userID)
 }

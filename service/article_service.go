@@ -1,44 +1,280 @@
 package service
 
 import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/gao66666/GoBlog/cache"
 	"github.com/gao66666/GoBlog/database"
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/mq"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
+)
+
+const (
+	articleSummaryMaxRunes = 100
+)
+
+func buildArticleSummary(content string) string {
+	s := strings.TrimSpace(content)
+	if s == "" {
+		return ""
+	}
+	// 单行化 + 压缩空白，避免摘要出现大片换行/空格
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.Join(strings.Fields(s), " ")
+
+	r := []rune(s)
+	if len(r) > articleSummaryMaxRunes {
+		r = r[:articleSummaryMaxRunes]
+	}
+	return string(r)
+}
+
+const (
+	hotKeyRefreshInterval = 30 * time.Second
+	hotKeyTopN            = 200
+	hotKeyMinScore        = 20
+	hotKeySetTTL          = 2 * time.Minute
+	articleReadLimitTTL   = 1 * time.Hour
+	articleActionLimitTTL = 1 * time.Hour
 )
 
 type ArticleService struct {
-	articleDB *database.ArticleRepository
-	redisRepo *database.RedisArticleRepository
+	articleDB   *database.ArticleRepository
+	userRepo    *database.UserRepository
+	commentRepo *database.CommentRepository
+	redisRepo   *database.RedisArticleRepository
+	guard       *cache.ArticleGuard
 }
 
-func NewArticleService(dataRepo *database.ArticleRepository, rs *database.RedisArticleRepository) *ArticleService {
-	return &ArticleService{
-		articleDB: dataRepo,
-		redisRepo: rs,
+func (s *ArticleService) fillCommentCounts(articles []*models.Article) {
+	if s == nil || s.commentRepo == nil || len(articles) == 0 {
+		return
+	}
+	ids := make([]uint64, 0, len(articles))
+	for _, a := range articles {
+		if a == nil || a.ID == 0 {
+			continue
+		}
+		ids = append(ids, a.ID)
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	cm, err := s.commentRepo.CountByArticleIDs(ids)
+	if err != nil {
+		zap.L().Warn("批量统计评论数失败", zap.Error(err))
+		return
+	}
+	for _, a := range articles {
+		if a == nil {
+			continue
+		}
+		if v, ok := cm[a.ID]; ok {
+			a.CommentCount = v
+		}
 	}
 }
 
-func (s *ArticleService) CreateArticle(article *models.Article) error {
-	s.articleDB.CreateArticle(article)
-	return nil
+func NewArticleService(dataRepo *database.ArticleRepository, userRepo *database.UserRepository, commentRepo *database.CommentRepository, rs *database.RedisArticleRepository) *ArticleService {
+	svc := &ArticleService{
+		articleDB:   dataRepo,
+		userRepo:    userRepo,
+		commentRepo: commentRepo,
+		redisRepo:   rs,
+		guard:       cache.NewArticleGuard(1_000_000, 0.01),
+	}
+	svc.warmBloomFilter()
+	svc.startHotKeyRefresher()
+	return svc
 }
 
-func (s *ArticleService) GetArticle(id uint64) (*models.Article, error) {
-	// 1. 从 MySQL 获取文章主体 (标题、正文等静态内容)
-	article, err := s.articleDB.GetArticleByID(id)
+func (s *ArticleService) startHotKeyRefresher() {
+	go func() {
+		ticker := time.NewTicker(hotKeyRefreshInterval)
+		defer ticker.Stop()
+
+		for {
+			if err := s.redisRepo.RefreshHotArticlesFromLeaderboard("view", hotKeyTopN, hotKeyMinScore, hotKeySetTTL); err != nil {
+				zap.L().Warn("刷新HotKey集合失败", zap.Error(err))
+			}
+			<-ticker.C
+		}
+	}()
+}
+
+func (s *ArticleService) warmBloomFilter() {
+	ids, err := s.articleDB.ListArticleIDs(50000)
+	if err != nil {
+		zap.L().Warn("Bloom 预热失败，将降级为仅空值缓存策略", zap.Error(err))
+		return
+	}
+	s.guard.Warm(ids)
+	zap.L().Info("Bloom 预热完成", zap.Int("count", len(ids)))
+}
+
+func (s *ArticleService) getArticleWithGuard(id uint64, isHot bool) (*models.Article, error) {
+	v, err := s.guard.DoLoad(fmt.Sprintf("article:%d", id), func() (interface{}, error) {
+		locked, token, lockErr := s.redisRepo.AcquireArticleRebuildLock(id, 3*time.Second)
+		if lockErr != nil {
+			zap.L().Warn("获取缓存重建锁失败，回退直接查库", zap.Uint64("article_id", id), zap.Error(lockErr))
+		}
+		if locked {
+			defer s.redisRepo.ReleaseArticleRebuildLock(id, token)
+		}
+
+		article, dbErr := s.articleDB.GetArticleByID(id)
+		if dbErr != nil {
+			if errors.Is(dbErr, gorm.ErrRecordNotFound) {
+				_ = s.redisRepo.SetArticleNullCache(id)
+			}
+			return nil, dbErr
+		}
+
+		s.guard.Add(article.ID)
+		if isHot {
+			_ = s.redisRepo.SetHotArticleCache(id, article)
+		} else {
+			_ = s.redisRepo.SetArticleCache(id, article)
+		}
+		return article, nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. 异步发送阅读指令到 NSQ (不再直接操作数据库)
-	// 生产者发出消息后，消费者会去更新 Redis 和 内存Map
+	return v.(*models.Article), nil
+}
+
+func (s *ArticleService) rebuildArticleCacheAsync(id uint64) {
 	go func() {
-		_ = mq.Publish("article_stats", mq.ArticleActionMsg{
-			Type:      "view",
-			ArticleID: id,
-		})
+		locked, token, err := s.redisRepo.AcquireArticleRebuildLock(id, 5*time.Second)
+		if err != nil || !locked {
+			return
+		}
+		defer s.redisRepo.ReleaseArticleRebuildLock(id, token)
+
+		article, dbErr := s.articleDB.GetArticleByID(id)
+		if dbErr != nil {
+			if errors.Is(dbErr, gorm.ErrRecordNotFound) {
+				_ = s.redisRepo.SetArticleNullCache(id)
+			}
+			return
+		}
+
+		s.guard.Add(article.ID)
+		_ = s.redisRepo.SetHotArticleCache(id, article)
 	}()
+}
+
+func (s *ArticleService) CreateArticle(article *models.Article) error {
+	if article != nil {
+		// 规范化摘要
+		article.Summary = buildArticleSummary(article.Content)
+
+		// 处理 tags（handler 传入的 article.Tags 只带 Name）
+		if len(article.Tags) > 0 {
+			names := make([]string, 0, len(article.Tags))
+			for _, t := range article.Tags {
+				if strings.TrimSpace(t.Name) == "" {
+					continue
+				}
+				names = append(names, strings.TrimSpace(t.Name))
+			}
+			if len(names) > 0 {
+				tags, err := s.articleDB.EnsureTags(names)
+				if err != nil {
+					return err
+				}
+				article.Tags = tags
+			}
+		}
+	}
+	err := s.articleDB.CreateArticle(article)
+	if err != nil {
+		return err
+	}
+	s.guard.Add(article.ID)
+	_ = s.redisRepo.SetArticleCache(article.ID, article)
+	s.syncArticleToSearch(article)
+	return nil
+}
+
+func (s *ArticleService) syncArticleToSearch(article *models.Article) {
+	if article == nil {
+		return
+	}
+
+	authorName := fmt.Sprintf("UID:%d", article.AuthorID)
+	if s.userRepo != nil {
+		if user, err := s.userRepo.GetUserByID(article.AuthorID); err == nil && user.Name != "" {
+			authorName = user.Name
+		}
+	}
+
+	tags := make([]string, 0, len(article.Tags))
+	for _, tag := range article.Tags {
+		tags = append(tags, tag.Name)
+	}
+
+	payload := &models.SearchSyncPayload{
+		ID:         article.ID,
+		Title:      article.Title,
+		AuthorName: authorName,
+		Tags:       tags,
+		Summary:    article.Summary,
+	}
+
+	if err := mq.PublishSearchSync(payload); err != nil {
+		zap.L().Warn("发送文章搜索同步消息失败", zap.Uint64("article_id", article.ID), zap.Error(err))
+	}
+}
+
+func (s *ArticleService) GetArticle(id uint64) (*models.Article, error) {
+	isHot, hotErr := s.redisRepo.IsHotArticle(id)
+	if hotErr != nil {
+		zap.L().Warn("HotKey判定失败，回退普通缓存策略", zap.Uint64("article_id", id), zap.Error(hotErr))
+		isHot = false
+	}
+
+	// 1. 缓存优先
+	var (
+		cachedArticle *models.Article
+		expired       bool
+		hit           bool
+		nullHit       bool
+		err           error
+	)
+	if isHot {
+		cachedArticle, expired, hit, nullHit, err = s.redisRepo.GetCachedArticleWithLogicalExpire(id)
+	} else {
+		cachedArticle, hit, nullHit, err = s.redisRepo.GetCachedArticle(id)
+	}
+	if err != nil {
+		zap.L().Warn("读取文章缓存失败，降级直查DB", zap.Uint64("article_id", id), zap.Error(err))
+	} else {
+		if hit && nullHit {
+			return nil, gorm.ErrRecordNotFound
+		}
+		if hit && cachedArticle != nil {
+			if isHot && expired {
+				s.rebuildArticleCacheAsync(id)
+			}
+			return cachedArticle, nil
+		}
+	}
+
+	// 2. 防穿透/击穿后回源
+	article, err := s.getArticleWithGuard(id, isHot)
+	if err != nil {
+		return nil, err
+	}
 
 	views, likes, err := s.redisRepo.GetStats(id)
 	// 3. 获取实时统计数据 (优先读 Redis)
@@ -55,41 +291,118 @@ func (s *ArticleService) GetArticle(id uint64) (*models.Article, error) {
 	// 3. 组装数据返回
 	article.ViewCount = uint64(views)
 	article.LikeCount = uint64(likes)
+	if isHot {
+		_ = s.redisRepo.SetHotArticleCache(id, article)
+	} else {
+		_ = s.redisRepo.SetArticleCache(id, article)
+	}
 	return article, nil
 }
 
-func (s *ArticleService) LikeArticle(id uint64, isCancel bool) error {
-	// 1. 确定动作类型
+func (s *ArticleService) ReadArticle(id uint64, actorKey string) (*models.Article, error) {
+	article, err := s.GetArticle(id)
+	if err != nil {
+		return nil, err
+	}
+
+	if actorKey == "" {
+		actorKey = "anonymous"
+	}
+
+	limitKey := fmt.Sprintf("article:read:limit:%d:%s", id, actorKey)
+	first, err := s.redisRepo.MarkOnceByKey(limitKey, articleReadLimitTTL)
+	if err != nil {
+		zap.L().Warn("写入文章阅读幂等key失败", zap.Uint64("article_id", id), zap.String("actor_key", actorKey), zap.Error(err))
+		return article, nil
+	}
+	if !first {
+		return article, nil
+	}
+
+	if err := s.redisRepo.IncrStats(id, "view"); err != nil {
+		_ = s.redisRepo.DeleteKey(limitKey)
+		zap.L().Warn("文章阅读统计写入Redis失败", zap.Uint64("article_id", id), zap.Error(err))
+		return nil, err
+	}
+	if err := s.redisRepo.UpdateLeaderboard(id, "view"); err != nil {
+		_ = s.redisRepo.DecrStats(id, "view")
+		_ = s.redisRepo.DeleteKey(limitKey)
+		zap.L().Warn("文章阅读排行榜写入Redis失败", zap.Uint64("article_id", id), zap.Error(err))
+		return nil, err
+	}
+
+	msg := mq.ArticleActionMsg{
+		Type:      "view",
+		ArticleID: id,
+		Timestamp: time.Now().Unix(),
+	}
+	if err := mq.PublishAction(msg); err != nil {
+		zap.L().Error("发送阅读消息到NSQ失败", zap.Uint64("article_id", id), zap.Error(err))
+		_ = s.redisRepo.DecrStats(id, "view")
+		_ = s.redisRepo.UpdateLeaderboardDecr(id, "view")
+		_ = s.redisRepo.DeleteKey(limitKey)
+		return nil, err
+	}
+
+	return article, nil
+}
+
+func (s *ArticleService) LikeArticle(id uint64, userID uint64, isCancel bool) error {
+	if userID == 0 || id == 0 {
+		return fmt.Errorf("invalid user_id/article_id")
+	}
+
 	actionType := "like"
 	if isCancel {
 		actionType = "unlike"
 	}
 
-	// 2. (可选但推荐) 实时抢跑更新 Redis 缓存和排行榜
-	// 这样用户在消息还没被 NSQ 消费的这几十毫秒内刷新页面，也能看到最新数据
-	go func() {
-		if !isCancel {
-			_ = s.redisRepo.IncrStats(id, "like")
-			_ = s.redisRepo.UpdateLeaderboard(id, "like")
-		} else {
-			// 注意：取消点赞时 Redis 需要减 1，你需要给 RedisRepo 加个 DecrStats 方法
-			_ = s.redisRepo.DecrStats(id, "like")
-			_ = s.redisRepo.UpdateLeaderboardDecr(id, "like")
-		}
-	}()
+	// 1) 先落“唯一行为记录”，只在状态真正变化时才继续更新计数与投递 MQ。
+	changed, err := s.articleDB.EnsureLikeState(userID, id, isCancel)
+	if err != nil {
+		zap.L().Warn("更新点赞状态失败", zap.Uint64("article_id", id), zap.Uint64("user_id", userID), zap.Error(err))
+		return err
+	}
+	if !changed {
+		return nil
+	}
 
-	// 3. 构造 NSQ 消息，确保数据最终落库 MySQL
+	// 2) 状态变更后，再更新 Redis 实时计数与榜单（性能优先，可容忍短暂不一致）。
+	if actionType == "like" {
+		if err := s.redisRepo.IncrStats(id, "like"); err != nil {
+			return err
+		}
+		if err := s.redisRepo.UpdateLeaderboard(id, "like"); err != nil {
+			_ = s.redisRepo.DecrStats(id, "like")
+			return err
+		}
+	} else {
+		if err := s.redisRepo.DecrStats(id, "like"); err != nil {
+			return err
+		}
+		if err := s.redisRepo.UpdateLeaderboardDecr(id, "like"); err != nil {
+			_ = s.redisRepo.IncrStats(id, "like")
+			return err
+		}
+	}
+
+	// 3) 投递 NSQ 增量消息（用于 MySQL 批量落库）。
 	msg := mq.ArticleActionMsg{
 		Type:      actionType,
 		ArticleID: id,
+		UserID:    userID,
+		Timestamp: time.Now().Unix(),
 	}
-
-	// 4. 发送到 NSQ
-	// 异步系统会接手剩下的事：内存聚合、定时 Flush 到 MySQL
-	err := mq.Publish("article_stats", msg)
-	if err != nil {
-		// 如果 NSQ 发送失败，这里需要记录错误
+	if err := mq.PublishAction(msg); err != nil {
 		zap.L().Error("发送点赞消息到NSQ失败", zap.Uint64("aid", id), zap.Error(err))
+		// MQ 发送失败：回滚 Redis 侧增量（DB 状态已变更，MySQL 计数后续可通过修正任务对齐）
+		if actionType == "like" {
+			_ = s.redisRepo.DecrStats(id, "like")
+			_ = s.redisRepo.UpdateLeaderboardDecr(id, "like")
+		} else {
+			_ = s.redisRepo.IncrStats(id, "like")
+			_ = s.redisRepo.UpdateLeaderboard(id, "like")
+		}
 		return err
 	}
 
@@ -104,14 +417,58 @@ func (s *ArticleService) GetArticleList(authorID uint64, page int, size int) ([]
 		return nil, 0, err
 	}
 
+	// 批量补齐评论数（用于列表/最新博客/个人中心展示）
+	s.fillCommentCounts(articleList)
+
 	return articleList, total, nil
 }
 
-func (s *ArticleService) DeleteArticle(id uint64, article_id uint64) error {
-	//进行检验
-	//删除
-	err := s.articleDB.DeleteArticle(id, article_id)
-	return err
+func (s *ArticleService) DeleteArticle(userID uint64, articleID uint64) error {
+	// 只有作者本人才能删除文章
+	return s.articleDB.DeleteArticle(articleID, userID)
+}
+
+func (s *ArticleService) UpdateArticle(userID uint64, articleID uint64, title, content string, tagNames []string) error {
+	article, err := s.articleDB.GetArticleByID(articleID)
+	if err != nil {
+		return err
+	}
+	if article.AuthorID != userID {
+		return fmt.Errorf("no permission to edit this article")
+	}
+
+	article.Title = title
+	article.Content = content
+	article.Summary = buildArticleSummary(content)
+	article.UpdatedAt = time.Now()
+
+	// 更新 tags
+	if tagNames == nil {
+		tagNames = []string{}
+	}
+	tags, err := s.articleDB.EnsureTags(tagNames)
+	if err != nil {
+		return err
+	}
+	article.Tags = tags
+
+	if err := s.articleDB.UpdateArticleWithTags(article); err != nil {
+		return err
+	}
+
+	// 写穿/失效 Redis 详情缓存，避免更新后仍读到旧内容
+	if s.redisRepo != nil {
+		isHot, hotErr := s.redisRepo.IsHotArticle(articleID)
+		if hotErr == nil && isHot {
+			_ = s.redisRepo.SetHotArticleCache(articleID, article)
+		} else {
+			_ = s.redisRepo.SetArticleCache(articleID, article)
+		}
+	}
+
+	// 更新搜索索引（异步），避免搜索结果长期旧数据
+	s.syncArticleToSearch(article)
+	return nil
 }
 
 func (s *ArticleService) GetLeaderboard(actionType string) ([]*models.Article, error) {
@@ -145,6 +502,9 @@ func (s *ArticleService) GetLeaderboard(actionType string) ([]*models.Article, e
 			orderedArticles = append(orderedArticles, a)
 		}
 	}
+
+	// 批量补齐评论数
+	s.fillCommentCounts(orderedArticles)
 
 	return orderedArticles, nil
 }

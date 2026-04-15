@@ -1,7 +1,7 @@
 package handler
 
 import (
-	"net/http"
+	"strconv"
 
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/tool"
@@ -12,7 +12,7 @@ import (
 func (h *UserHandler) LoginHandle(c *gin.Context) {
 	var param models.ParamLogin
 	if err := c.ShouldBindJSON(&param); err != nil {
-		c.JSON(400, gin.H{"error": "参数错误"})
+		tool.ResponseError(c, ErrCodeInvalidParam)
 		return
 	}
 	//登录成功，用户不存在，登录密码错误、数据库查询失败
@@ -21,18 +21,13 @@ func (h *UserHandler) LoginHandle(c *gin.Context) {
 		tool.ResponseError(c, err)
 		return
 	}
-	c.JSON(200, gin.H{
-		"message":   "登录成功",
-		"user_id":   user.ID,
-		"user_name": user.Name,
-		"token":     token,
-	})
+	tool.ResponseSuccess(c, gin.H{"user_id": strconv.FormatUint(user.ID, 10), "user_name": user.Name, "token": token}, "登录成功")
 }
 
 func (hd *UserHandler) SignUpHandle(c *gin.Context) {
 	var param models.ParamSignUp
 	if err := c.ShouldBindJSON(&param); err != nil {
-		c.JSON(400, gin.H{"error": "参数错误"})
+		tool.ResponseError(c, ErrCodeInvalidParam)
 		return
 	}
 
@@ -46,10 +41,7 @@ func (hd *UserHandler) SignUpHandle(c *gin.Context) {
 	}
 
 	// 成功情况
-	c.JSON(200, gin.H{
-		"message": "用户注册成功",
-		"user_id": userID, // 如果有的话
-	})
+	tool.ResponseSuccess(c, gin.H{"user_id": strconv.FormatUint(userID, 10)}, "用户注册成功")
 }
 
 func (hd *UserHandler) UpdateUserHandle(c *gin.Context) {
@@ -60,7 +52,7 @@ func (hd *UserHandler) UpdateUserHandle(c *gin.Context) {
 	// 2. 绑定参数
 	var p models.UpdateUserParam
 	if err := c.ShouldBindJSON(&p); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"msg": "参数格式错误"})
+		tool.ResponseError(c, ErrCodeInvalidParam)
 		return
 	}
 
@@ -77,7 +69,7 @@ func (hd *UserHandler) UpdateUserHandle(c *gin.Context) {
 		// 然后再用 []byte() 转换成字节切片
 		hashedBytes, err := bcrypt.GenerateFromPassword([]byte(*p.PassWord), bcrypt.DefaultCost)
 		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"msg": "错误的密码格式"})
+			tool.ResponseErrorWithMsg(c, "错误的密码格式")
 			return
 		}
 		// 存入 map，准备更新数据库
@@ -89,15 +81,38 @@ func (hd *UserHandler) UpdateUserHandle(c *gin.Context) {
 
 	// 如果用户什么都没传，直接返回成功
 	if len(updateMap) == 0 {
-		c.JSON(http.StatusOK, gin.H{"msg": "没有需要更新的内容"})
+		tool.ResponseSuccess(c, nil, "没有需要更新的内容")
 		return
 	}
 
 	// 4. 调用 Service 执行更新
 	if err := hd.se.UpdateUser(userID, updateMap); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"msg": "更新失败"})
+		tool.ResponseError(c, CodeServerBusy)
 		return
 	}
 
-	c.JSON(http.StatusNotFound, gin.H{"msg": "更新成功"})
+	tool.ResponseSuccess(c, nil, "更新成功")
+}
+
+// GetUserPublic 公开查询用户信息（用于文章详情展示作者信息）。
+func (h *UserHandler) GetUserPublic(c *gin.Context) {
+	idStr := c.Param("id")
+	uid, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil || uid == 0 {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	u, err := h.se.GetUserByID(uid)
+	if err != nil {
+		tool.ResponseErrorWithMsg(c, "用户不存在")
+		return
+	}
+
+	tool.ResponseSuccess(c, gin.H{
+		"user_id":         strconv.FormatUint(u.ID, 10),
+		"user_name":       u.Name,
+		"avatar":          u.Avatar,
+		"follower_count":  u.FollowingCount,
+	}, "查询成功")
 }

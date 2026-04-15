@@ -1,13 +1,11 @@
 package handler
 
 import (
-	"net/http"
 	"strconv"
 
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/tool"
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 func (h *CommentHandler) CreateComment(c *gin.Context) {
@@ -17,66 +15,36 @@ func (h *CommentHandler) CreateComment(c *gin.Context) {
 		return
 	}
 
-	// 1. 获取当前登录用户 ID
-	val, exists := c.Get("userID")
-	if !exists {
-		tool.ResponseError(c, ErrInvalidToken)
-		return
-	}
-	currentUserID := val.(uint64)
+	// 1. 获取 UID（从中间件拿到）
+	userID := c.GetUint64("userID")
 
-	var rootID uint64
-	var replyUserID uint64
-
-	// 2. 逻辑推导
+	// 2. 预处理父评论逻辑（为了拿到 RootID 和 ReplyUserID）
+	// 这部分逻辑建议也封装在 Service 的某个辅助方法里，这里先保持清晰
+	var rootID, replyUserID uint64
 	if p.ParentID != 0 {
-		parent, err := h.se.GetCommentByID(p.ParentID)
-		if err != nil {
-			zap.L().Warn("父评论不存在", zap.Uint64("parentID", p.ParentID))
-			tool.ResponseError(c, CodeServerBusy)
-			return
-		}
-
-		if parent.RootID == 0 {
+		if parent, err := h.se.GetCommentByID(p.ParentID); err == nil {
+			replyUserID = parent.UserID
 			rootID = parent.ID
-		} else {
-			rootID = parent.RootID
+			if parent.RootID != 0 {
+				rootID = parent.RootID
+			}
 		}
-		replyUserID = parent.UserID
 	}
 
-	// 3. 构造存储对象
-	newComment := &models.Comment{
-		ID:          tool.GenerateID(),
-		UserID:      currentUserID,
-		ArticleID:   p.ArticleID,
-		ParentID:    p.ParentID,
-		Content:     p.Content,
-		RootID:      rootID,
-		ReplyUserID: replyUserID,
+	// 3. 构造并调用 Service
+	comment := &models.Comment{
+		ID: tool.GenerateID(), UserID: userID, ArticleID: p.ArticleID,
+		ParentID: p.ParentID, Content: p.Content, RootID: rootID, ReplyUserID: replyUserID,
 	}
 
-	// 4. 调用 Service
-	savedComment, err := h.se.CreateComment(newComment)
+	saved, err := h.se.CreateComment(comment)
 	if err != nil {
-		zap.L().Error("插入评论失败", zap.Error(err))
 		tool.ResponseError(c, CodeServerBusy)
 		return
 	}
 
-	zap.L().Info("插入评论成功", zap.Uint64("id", savedComment.ID))
-
-	// 5. 返回结果
-	c.JSON(http.StatusOK, gin.H{
-		"msg": "发表成功",
-		"data": gin.H{
-			"commentId":   strconv.FormatUint(savedComment.ID, 10),
-			"content":     savedComment.Content,
-			"authorId":    strconv.FormatUint(savedComment.UserID, 10),
-			"replyUserId": strconv.FormatUint(savedComment.ReplyUserID, 10),
-			"createdAt":   savedComment.CreatedAt.Format("2006-01-02 15:04:05"),
-		},
-	})
+	// 4. 返回（格式化 ID 防止前端精度丢失）
+	tool.ResponseSuccess(c, gin.H{"commentId": strconv.FormatUint(saved.ID, 10), "content": saved.Content}, "发表成功")
 }
 
 func (h *CommentHandler) GetArticleComment(c *gin.Context) {
@@ -84,7 +52,7 @@ func (h *CommentHandler) GetArticleComment(c *gin.Context) {
 	articleIDStr := c.Query("article_id")
 	aid, err := strconv.ParseUint(articleIDStr, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文章ID"})
+		tool.ResponseError(c, ErrCodeInvalidParam)
 		return
 	}
 
@@ -94,18 +62,13 @@ func (h *CommentHandler) GetArticleComment(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "2")) // 每层楼默认预览2条
 
 	// 2. 调用服务层
-	comments, err := h.se.GetCommentByArticleID(aid, page, size, limit)
+	comments, total, err := h.se.GetCommentByArticleID(aid, page, size, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取评论失败"})
+		tool.ResponseError(c, CodeServerBusy)
 		return
 	}
 
-	// 3. 返回结果
-	c.JSON(http.StatusOK, gin.H{
-		"code": 200,
-		"data": comments,
-		"msg":  "success",
-	})
+	tool.ResponseSuccess(c, gin.H{"list": comments, "total": total})
 }
 
 func (h *CommentHandler) GetCommentDetail(c *gin.Context) {
@@ -120,15 +83,30 @@ func (h *CommentHandler) GetCommentDetail(c *gin.Context) {
 	// 3. 直接调用你刚才写的那个 Repo 方法 (或者通过 Service 转发)
 	list, total, err := h.se.GetCommentFloorDetails(rootID, offset, size)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"msg": "查询详情失败"})
+		tool.ResponseError(c, CodeServerBusy)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"code": 200,
-		"data": gin.H{
-			"total": total,
-			"list":  list,
-		},
-	})
+	tool.ResponseSuccess(c, gin.H{"total": total, "list": list})
+}
+
+// DeleteComment 删除评论（仅允许删除自己的评论）。
+func (h *CommentHandler) DeleteComment(c *gin.Context) {
+	commentID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || commentID == 0 {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	userID := c.GetUint64("userID")
+	if userID == 0 {
+		tool.ResponseError(c, ErrInvalidToken)
+		return
+	}
+
+	if err := h.se.DeleteComment(userID, commentID); err != nil {
+		tool.ResponseError(c, err)
+		return
+	}
+	tool.ResponseSuccess(c, gin.H{"commentId": strconv.FormatUint(commentID, 10)}, "删除成功")
 }

@@ -40,6 +40,14 @@ func (r *CommentRepository) GetCommentByID(id uint64) (*models.Comment, error) {
 	return &comment, nil
 }
 
+// DeleteCommentByID 删除评论（仅按 id + user_id 约束，保证只能删自己的）。
+func (r *CommentRepository) DeleteCommentByID(id uint64, userID uint64) error {
+	if id == 0 || userID == 0 {
+		return gorm.ErrInvalidData
+	}
+	return r.db.Where("id = ? AND user_id = ?", id, userID).Delete(&models.Comment{}).Error
+}
+
 // CreateComment 将评论写入数据库
 func (r *CommentRepository) CreateComment(comment *models.Comment) (*models.Comment, error) {
 	// GORM 执行 Create 后，会把数据库生成的数据（如 CreatedAt）回填到 comment 指针指向的内存中
@@ -120,4 +128,44 @@ func (r *CommentRepository) GetCommentsByRootIDs(rootIDs []uint64) ([]*models.Co
 	}
 
 	return comments, nil
+}
+
+// CountByArticleID 统计某篇文章下的所有评论数量（包含楼层和回复）。
+func (r *CommentRepository) CountByArticleID(articleID uint64) (int64, error) {
+	var total int64
+	if err := r.db.Model(&models.Comment{}).
+			Where("article_id = ?", articleID).
+			Count(&total).Error; err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+// CountByArticleIDs 批量统计多篇文章的评论数（包含楼层和回复）。
+// 返回 map[article_id]count，不在 map 中的视为 0。
+func (r *CommentRepository) CountByArticleIDs(articleIDs []uint64) (map[uint64]int64, error) {
+	out := make(map[uint64]int64)
+	if len(articleIDs) == 0 {
+		return out, nil
+	}
+
+	type row struct {
+		ArticleID uint64
+		Cnt       int64
+	}
+	rows := make([]row, 0, len(articleIDs))
+
+	err := r.db.Model(&models.Comment{}).
+		Select("article_id, COUNT(1) as cnt").
+		Where("article_id IN ?", articleIDs).
+		Group("article_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	for _, r := range rows {
+		out[r.ArticleID] = r.Cnt
+	}
+	return out, nil
 }

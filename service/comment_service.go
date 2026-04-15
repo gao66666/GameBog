@@ -1,18 +1,27 @@
 package service
 
 import (
+	"fmt"
+
 	"github.com/gao66666/GoBlog/database"
 	"github.com/gao66666/GoBlog/models"
+	"github.com/gao66666/GoBlog/mq"
+	"gorm.io/gorm"
+	"go.uber.org/zap"
 )
 
 type CommentService struct {
 	commentRepo *database.CommentRepository
+	articleRepo *database.ArticleRepository
+	userRepo    *database.UserRepository
 	redisRepo   *database.RedisCommentRepository
 }
 
-func NewCommentService(dataRepo *database.CommentRepository, rs *database.RedisCommentRepository) *CommentService {
+func NewCommentService(dataRepo *database.CommentRepository, dr *database.ArticleRepository, ur *database.UserRepository, rs *database.RedisCommentRepository) *CommentService {
 	return &CommentService{
 		commentRepo: dataRepo,
+		articleRepo: dr,
+		userRepo:    ur,
 		redisRepo:   rs,
 	}
 }
@@ -22,18 +31,108 @@ func (s *CommentService) GetCommentByID(id uint64) (*models.Comment, error) {
 	return comment, err
 }
 
+// DeleteComment 仅允许删除自己的评论。
+func (s *CommentService) DeleteComment(userID uint64, commentID uint64) error {
+	if userID == 0 || commentID == 0 {
+		return ErrInternalServer
+	}
+
+	comment, err := s.commentRepo.GetCommentByID(commentID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return ErrCommentNotFound
+		}
+		return err
+	}
+
+	if comment.UserID != userID {
+		return ErrCommentNoPermission
+	}
+
+	if err := s.commentRepo.DeleteCommentByID(commentID, userID); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *CommentService) CreateComment(comment *models.Comment) (*models.Comment, error) {
+	// 1. 持久化到数据库
 	comment, err := s.commentRepo.CreateComment(comment)
-	return comment, err
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. 触发异步推送（不阻塞主流程）
+	go s.sendCommentNotification(comment)
+
+	return comment, nil
+}
+
+func (s *CommentService) sendCommentNotification(c *models.Comment) {
+	var targetID uint64
+	var msg string
+	var msgType string
+
+	// 1. 获取评论者（发件人）信息
+	senderName := fmt.Sprintf("UID:%d", c.UserID) // 默认保底文案
+	commenter, err := s.userRepo.GetUserByID(c.UserID)
+	if err == nil && commenter.Name != "" {
+		senderName = commenter.Name
+	}
+
+	// 2. 评论内容预览处理 (支持中文字符截断)
+	contentPreview := c.Content
+	runes := []rune(contentPreview)
+	if len(runes) > 15 {
+		contentPreview = string(runes[:15]) + "..."
+	}
+
+	// 3. 区分场景构造通知文案
+	if c.ParentID != 0 {
+		// --- 场景 A: 回复消息 ---
+		if c.ReplyUserID == c.UserID {
+			return
+		} // 自己回自己不推送
+		targetID = c.ReplyUserID
+		msg = fmt.Sprintf("%s 回复了你：%s", senderName, contentPreview)
+		msgType = "reply"
+	} else {
+		// --- 场景 B: 文章评论 ---
+		article, err := s.articleRepo.GetArticleByID(c.ArticleID)
+		if err != nil || article.AuthorID == c.UserID {
+			return
+		}
+
+		targetID = article.AuthorID
+		msg = fmt.Sprintf("%s 评论了你的文章《%s》:%s", senderName, article.Title, contentPreview)
+		msgType = "comment"
+	}
+
+	// 4. 正式入队
+	if err := mq.PublishNotification(targetID, c.UserID, senderName, msg, msgType); err != nil {
+		zap.L().Error("Kafka 入队失败",
+			zap.Uint64("to_uid", targetID),
+			zap.Error(err))
+	}
 }
 
 // 服务层拿取到的是用户所有的信息，但我要进行处理，只拿取CommentUser内的信息放入CommentVo
 // limit表示获取每楼前多少个评论
-func (s *CommentService) GetCommentByArticleID(aid uint64, page, size, limit int) ([]*models.CommentVO, error) {
+func (s *CommentService) GetCommentByArticleID(aid uint64, page, size, limit int) ([]*models.CommentVO, int64, error) {
 	// 1. 拿到这一页的 size 个楼长 ID
 	rootIds, err := s.commentRepo.GetRootIDSByArticleID(aid, page, size)
 	if err != nil || len(rootIds) == 0 {
-		return nil, err
+		if err != nil {
+			return nil, 0, err
+		}
+		// 没有任何评论
+		return []*models.CommentVO{}, 0, nil
+	}
+
+	// 统计该文章下的所有评论数量（包含回复）
+	total, err := s.commentRepo.CountByArticleID(aid)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// 2. 初始化 Map，并提前把“坑”占好
@@ -46,7 +145,7 @@ func (s *CommentService) GetCommentByArticleID(aid uint64, page, size, limit int
 	// 3. 一次批量查询
 	allComments, err := s.commentRepo.GetCommentsByRootIDs(rootIds)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// 4. 真正的高手遍历：一次过
@@ -78,7 +177,7 @@ func (s *CommentService) GetCommentByArticleID(aid uint64, page, size, limit int
 	for _, id := range rootIds {
 		finalResult = append(finalResult, rootVOMap[id])
 	}
-	return finalResult, nil
+	return finalResult, total, nil
 }
 
 func (s *CommentService) convertToVO(c *models.Comment) *models.CommentVO {
@@ -92,6 +191,7 @@ func (s *CommentService) convertToVO(c *models.Comment) *models.CommentVO {
 			Avatar:   c.User.Avatar,
 		},
 		LikeCount: c.LikeCount,
+		CreatedAt: c.CreatedAt,
 	}
 
 	// 只有当存在被回复者且 ReplyUser 确实被查询出来了才赋值

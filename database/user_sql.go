@@ -57,7 +57,17 @@ func (r *UserRepository) GetUserByID(userid uint64) (*models.User, error) {
 	var user models.User
 	result := r.db.First(&user, userid)
 	if result.Error != nil {
-		return nil, ErrUserGet // 返回原始错误
+		return nil, result.Error
+	}
+	return &user, nil
+}
+
+// GetUserByTel 根据手机号查询用户
+func (r *UserRepository) GetUserByTel(tel string) (*models.User, error) {
+	var user models.User
+	result := r.db.Where("tel = ?", tel).First(&user)
+	if result.Error != nil {
+		return nil, result.Error
 	}
 	return &user, nil
 }
@@ -77,4 +87,24 @@ func (r *UserRepository) IncrementFollowerCount(userID uint64) error {
 	return r.db.Model(&models.User{}).
 		Where("id = ?", userID).
 		Update("follower_count", gorm.Expr("follower_count + 1")).Error
+}
+
+// SearchUsersByNameOrTel 用于简单搜索用户，按名称/手机号模糊匹配，粗略代表“相关性”。
+func (r *UserRepository) SearchUsersByNameOrTel(keyword string, limit int) ([]*models.User, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	var users []*models.User
+	like := "%" + keyword + "%"
+	err := r.db.Model(&models.User{}).
+		Select("id", "name", "email", "tel", "avatar", "following_count", "created_at").
+		Where("name LIKE ? OR tel LIKE ?", like, like).
+		Order("name ASC").
+		Limit(limit).
+		Find(&users).Error
+	if err != nil {
+		return nil, err
+	}
+	return users, nil
 }

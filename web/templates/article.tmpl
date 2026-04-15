@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GoBlog - 博客</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container row">
+      <div class="brand"><a href="/">GoBlog</a></div>
+      <nav class="nav">
+        <a href="/" id="navHome">首页</a>
+        <a href="/me" id="navMe">个人中心</a>
+        <a href="/login" id="navLogin">登录</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container" data-article-id="{{ .ArticleID }}" id="page">
+    <section class="card">
+      <h1 id="articleTitle">加载中...</h1>
+      <div class="muted" id="articleMeta"></div>
+
+      <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap;margin-top:8px">
+        <div class="muted" id="authorInfo">作者：-</div>
+        <button type="button" id="followBtn" style="display:none">关注</button>
+        <div class="muted" id="followMsg"></div>
+      </div>
+      <hr />
+      <div class="content" id="articleContent"></div>
+      <div class="row" style="justify-content:flex-start;gap:8px;margin-top:12px">
+        <button type="button" id="likeBtn" class="like-btn" aria-label="点赞">
+          <span class="like-icon" aria-hidden="true">👍</span>
+        </button>
+        <div class="muted" id="likeMsg"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>评论区</h2>
+
+      <form id="commentForm" class="form">
+        <label>
+          <div class="label">发表评论</div>
+          <textarea name="content" rows="4" maxlength="500" placeholder="写点什么..." required></textarea>
+        </label>
+        <button type="submit">发表</button>
+        <div class="muted" id="commentMsg" style="margin-top:8px"></div>
+      </form>
+
+      <div style="height:16px"></div>
+      <div id="comments"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/article.js"></script>
+</body>
+</html>

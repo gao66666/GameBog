@@ -2,11 +2,14 @@ package database
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"time"
 
 	"github.com/gao66666/GoBlog/setting"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 type Repository struct {
@@ -25,10 +28,20 @@ func MysqlInit(cfg *setting.MySQLConfig) *gorm.DB {
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.DB)
 
 	var err error
+	newLogger := gormlogger.New(
+		log.New(os.Stdout, "\r\n", log.LstdFlags),
+		gormlogger.Config{
+			SlowThreshold:             1 * time.Second,
+			LogLevel:                  gormlogger.Warn,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  false,
+		},
+	)
 	// 使用连接池配置来优化性能
 	instance, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
 		// 可以在这里增加一些全局配置，比如禁用外键约束等
 		DisableForeignKeyConstraintWhenMigrating: true,
+		Logger:                                   newLogger,
 	})
 
 	if err != nil {

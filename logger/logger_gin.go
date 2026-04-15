@@ -22,10 +22,12 @@ func GinLogger() gin.HandlerFunc {
 		query := c.Request.URL.RawQuery
 		c.Next()
 		cost := time.Since(start)
+		reqID := c.Writer.Header().Get("X-Request-Id")
 		lg.Info(path,
 			zap.Int("status", c.Writer.Status()),
 			zap.String("method", c.Request.Method),
 			zap.String("path", path),
+			zap.String("request_id", reqID),
 			zap.String("query", query),
 			zap.String("ip", c.ClientIP()),
 			zap.String("user-agent", c.Request.UserAgent()),
