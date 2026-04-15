@@ -24,6 +24,12 @@ func UserPage(c *gin.Context) {
 	})
 }
 
+func DMPage(c *gin.Context) {
+	c.HTML(http.StatusOK, "dm.tmpl", gin.H{
+		"PeerID": c.Query("peer_id"),
+	})
+}
+
 func ArticlePage(c *gin.Context) {
 	c.HTML(http.StatusOK, "article.tmpl", gin.H{
 		"ArticleID": c.Param("id"),

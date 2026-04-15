@@ -19,14 +19,14 @@ import (
 type NotificationHandler struct {
 	Meld              *melody.Melody
 	Conns             sync.Map // 存储 key: uint64(UserID), value: *melody.Session
-	notificationRepo   *database.NotificationRepository
-	redisNotification  *database.RedisNotificationRepository
+	notificationRepo  *database.NotificationRepository
+	redisNotification *database.RedisNotificationRepository
 }
 
 func NewNotificationHandler(notificationRepo *database.NotificationRepository, redisNotification *database.RedisNotificationRepository) *NotificationHandler {
 	m := melody.New()
 	nh := &NotificationHandler{
-		Meld:             m,
+		Meld:              m,
 		notificationRepo:  notificationRepo,
 		redisNotification: redisNotification,
 	}

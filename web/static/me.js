@@ -1,5 +1,5 @@
 (function () {
-    const { qs, getAuth, api } = window.GoBlog;
+    const { qs, getAuth, api, ensureWSConnected, getWSStatus } = window.GoBlog;
 
     let myPage = 1;
     const mySize = 10;
@@ -34,32 +34,27 @@
         list.insertBefore(li, list.firstChild);
     }
 
-    function connectWS(token) {
+    function setupWS() {
         const status = qs('wsStatus');
+        if (status) status.textContent = getWSStatus ? (getWSStatus() || '未连接') : '未连接';
 
-        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const url = proto + '//' + location.host + '/api/v1/ws?token=' + encodeURIComponent(token);
+        window.addEventListener('goblog:ws-status', function (ev) {
+            const s = ev && ev.detail && ev.detail.status;
+            if (status && s) status.textContent = s;
+        });
 
-        status.textContent = '连接中...';
-        const ws = new WebSocket(url);
-
-        ws.onopen = function () {
-            status.textContent = '已连接';
-        };
-        ws.onclose = function () {
-            status.textContent = '已断开';
-        };
-        ws.onerror = function () {
-            status.textContent = '连接错误';
-        };
-        ws.onmessage = function (ev) {
+        window.addEventListener('goblog:ws-message', function (ev) {
+            const data = ev && ev.detail && ev.detail.data;
+            if (!data) return;
             try {
-                const obj = JSON.parse(ev.data);
+                const obj = JSON.parse(data);
                 addNotif(obj);
             } catch {
-                addNotif({ content: String(ev.data) });
+                addNotif({ content: String(data) });
             }
-        };
+        });
+
+        try { ensureWSConnected(); } catch { /* ignore */ }
     }
 
     document.addEventListener('DOMContentLoaded', function () {
@@ -115,7 +110,7 @@
                 return;
             }
 
-            connectWS(token);
+            setupWS();
         } catch (e) {
             const empty = qs('myArticlesEmpty');
             if (empty) empty.textContent = '加载失败：脚本错误';

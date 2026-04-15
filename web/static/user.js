@@ -77,7 +77,7 @@
             dmBtn.disabled = !hasLogin;
             dmBtn.onclick = function () {
                 if (!hasLogin) return;
-                if (msg) msg.textContent = '私信功能暂未开放';
+                location.href = '/dm?peer_id=' + encodeURIComponent(String(uid));
             };
         }
 

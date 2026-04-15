@@ -6,8 +6,8 @@ import (
 	"github.com/gao66666/GoBlog/database"
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/mq"
-	"gorm.io/gorm"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 type CommentService struct {

@@ -18,13 +18,14 @@ import (
 
 // App 结构体用来持有所有的 Handler，方便路由挂载
 type App struct {
-	UserHandler         *handler.UserHandler
-	ArticleHandler      *handler.ArticleHandler
-	CommentHandler      *handler.CommentHandler
-	FollowHandler       *handler.FollowHandler
-	NotificationHandler *handler.NotificationHandler
+	UserHandler              *handler.UserHandler
+	ArticleHandler           *handler.ArticleHandler
+	CommentHandler           *handler.CommentHandler
+	FollowHandler            *handler.FollowHandler
+	NotificationHandler      *handler.NotificationHandler
 	NotificationStoreHandler *handler.NotificationStoreHandler
-	SearchHandler       *handler.SearchHandler
+	SearchHandler            *handler.SearchHandler
+	DMHandler                *handler.DMHandler
 }
 
 func (a *App) StartWorkers() {
@@ -51,6 +52,8 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	notificationRedis := database.NewRedisNotificationRepository(rdb)
 	followRepo := database.NewFollowRepository(db)
 	followRedis := database.NewRedisFollowRepository(rdb)
+	dmRepo := database.NewDMRepository(db)
+	dmRedis := database.NewRedisDMRepository(rdb)
 
 	if err := userRepo.InitTable(); err != nil {
 		zap.L().Warn("用户表初始化失败", zap.Error(err))
@@ -67,24 +70,30 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	if err := followRepo.InitTable(); err != nil {
 		zap.L().Warn("关注表初始化失败", zap.Error(err))
 	}
+	if err := dmRepo.InitTable(); err != nil {
+		zap.L().Warn("私信表初始化失败", zap.Error(err))
+	}
 
 	// 2. Service 层
 	userSvc := service.NewUserService(userRepo, userRedis)
 	articleSvc := service.NewArticleService(articleRepo, userRepo, commentRepo, articleRedis)
 	commentSvc := service.NewCommentService(commentRepo, articleRepo, userRepo, commentRedis)
 	followSvc := service.NewFollowService(followRepo, userRepo, followRedis)
+	dmSvc := service.NewDMService(dmRepo, userRepo, dmRedis)
 
 	// 3. Handler 层
 	notificationHandler := handler.NewNotificationHandler(notificationRepo, notificationRedis)
 	notificationStoreHandler := handler.NewNotificationStoreHandler(notificationRepo)
+	dmHandler := handler.NewDMHandler(dmSvc, notificationHandler)
 	return &App{
-		UserHandler:         handler.NewUserHandler(userSvc),
-		ArticleHandler:      handler.NewArticleHandler(articleSvc),
-		CommentHandler:      handler.NewCommentHandler(commentSvc),
-		FollowHandler:       handler.NewFollowHandler(followSvc),
-		NotificationHandler: notificationHandler,
+		UserHandler:              handler.NewUserHandler(userSvc),
+		ArticleHandler:           handler.NewArticleHandler(articleSvc),
+		CommentHandler:           handler.NewCommentHandler(commentSvc),
+		FollowHandler:            handler.NewFollowHandler(followSvc),
+		NotificationHandler:      notificationHandler,
 		NotificationStoreHandler: notificationStoreHandler,
-		SearchHandler:       handler.NewSearchHandler(articleRepo, userRepo, commentRepo),
+		SearchHandler:            handler.NewSearchHandler(articleRepo, userRepo, commentRepo),
+		DMHandler:                dmHandler,
 	}
 }
 
@@ -127,6 +136,7 @@ func RouterInit(mode string, app *App) *gin.Engine {
 	r.GET("/login", handler.LoginPage)
 	r.GET("/me", handler.MePage)
 	r.GET("/u/:id", handler.UserPage)
+	r.GET("/dm", handler.DMPage)
 	r.GET("/article/:id", handler.ArticlePage)
 	r.GET("/editor", handler.EditorPage)
 
@@ -172,6 +182,9 @@ func registerProtectedRoutes(g *gin.RouterGroup, app *App) {
 	{
 		authGroup.POST("/users/update", app.UserHandler.UpdateUserHandle)
 		authGroup.POST("/follow", app.FollowHandler.CreateFollowAuth)
+		authGroup.GET("/dm/peers", app.DMHandler.ListPeers)
+		authGroup.GET("/dm/messages", app.DMHandler.ListMessages)
+		authGroup.POST("/dm/messages", app.DMHandler.SendMessage)
 		authGroup.POST("/articles", app.ArticleHandler.CreateArticleHandle)
 		authGroup.PUT("/articles/:id", app.ArticleHandler.UpdateArticleHandle)
 		authGroup.GET("/articles", app.ArticleHandler.GetArticleListHandler)

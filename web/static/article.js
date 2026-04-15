@@ -274,7 +274,12 @@
         const resp = await api('/api/v1/users/' + encodeURIComponent(authorId));
         const u = resp && resp.data;
         const name = (u && (u.user_name || u.userName)) || '-';
-        setText('authorInfo', '作者：' + name);
+
+        const authorEl = qs('authorInfo');
+        if (authorEl) {
+            const uid = String((u && (u.user_id || u.userId)) || authorId);
+            authorEl.innerHTML = '作者：<a href="/u/' + encodeURIComponent(uid) + '">' + String(name) + '</a>';
+        }
 
         setupFollowButton(String((u && (u.user_id || u.userId)) || authorId));
     }
