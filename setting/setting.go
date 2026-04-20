@@ -2,6 +2,7 @@ package setting
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -91,7 +92,9 @@ type SecurityConfig struct {
 }
 
 type ObservabilityConfig struct {
-	EnableMetrics bool `mapstructure:"enable_metrics"`
+	EnableMetrics bool   `mapstructure:"enable_metrics"`
+	EnablePprof   bool   `mapstructure:"enable_pprof"`
+	PprofAddr     string `mapstructure:"pprof_addr"`
 }
 
 func Init(filePath string) (err error) {
@@ -180,6 +183,9 @@ func setDefaults() {
 	if Conf.ObservabilityConfig == nil {
 		Conf.ObservabilityConfig = &ObservabilityConfig{}
 	}
+	if Conf.ObservabilityConfig.PprofAddr == "" {
+		Conf.ObservabilityConfig.PprofAddr = "127.0.0.1:6060"
+	}
 
 	if len(Conf.KafkaConfig.Brokers) == 0 {
 		Conf.KafkaConfig.Brokers = []string{"127.0.0.1:9092"}
@@ -210,6 +216,21 @@ func setDefaults() {
 func validate() error {
 	if Conf.Port <= 0 {
 		return fmt.Errorf("invalid port: %d", Conf.Port)
+	}
+	if Conf.ObservabilityConfig != nil && Conf.ObservabilityConfig.EnablePprof {
+		addr := strings.TrimSpace(Conf.ObservabilityConfig.PprofAddr)
+		if addr == "" {
+			return fmt.Errorf("pprof enabled but pprof_addr is empty")
+		}
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return fmt.Errorf("invalid pprof_addr: %s", addr)
+		}
+		// 安全建议：优先绑定 localhost；如果在 Docker 中需要通过端口映射访问，可绑定 0.0.0.0
+		// 并在 docker-compose 中用 "127.0.0.1:6060:6060" 仅暴露到宿主机本地。
+		if host != "127.0.0.1" && host != "localhost" && host != "0.0.0.0" {
+			return fmt.Errorf("pprof_addr must bind to localhost (127.0.0.1/localhost) or 0.0.0.0, got host=%s", host)
+		}
 	}
 	if Conf.MySQLConfig == nil || Conf.MySQLConfig.Host == "" || Conf.MySQLConfig.User == "" || Conf.MySQLConfig.DB == "" {
 		return fmt.Errorf("mysql config is incomplete")

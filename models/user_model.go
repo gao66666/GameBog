@@ -13,9 +13,9 @@ type User struct {
 	Tel            string `gorm:"column:tel;size:20;uniqueIndex"`
 	Password       string `gorm:"column:password;size:255"`
 	Avatar         string `gorm:"column:avatar"`          // 头像链接
+	Github         string `gorm:"column:github;size:255"` // GitHub 主页链接
 	FollowingCount uint64 `gorm:"column:following_count"` // 被多少人关注
-	// FollowerCount  uint64 `gorm:"column:follower_count"`  //关注了多少人
-	CreatedAt time.Time
+	CreatedAt      time.Time
 }
 
 // ParamSignUp 注册请求参数
@@ -40,16 +40,19 @@ func (u *User) HashPassword() error {
 	return nil
 }
 
-// 验证密码
+// CheckPassword 验证密码
 func (u *User) CheckPassword(plainPassword string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(plainPassword))
 	return err == nil
 }
 
 type UpdateUserParam struct {
-	Name     *string `json:"name"` // 使用指针，区分“传了空字符串”和“完全没传”
-	Tel      *string `json:"tel"`
-	PassWord *string `json:"password"`
-	Email    *string `json:"email"`
-	Avatar   *string `json:"avatar"`
+	Name      *string `json:"name"`
+	Tel       *string `json:"tel"`
+	PassWord  *string `json:"password"`
+	Email     *string `json:"email"`
+	Avatar    *string `json:"avatar"`
+	Github    *string `json:"github"`
+	GithubURL *string `json:"github_url"`
+	GithubUrl *string `json:"githubUrl"`
 }

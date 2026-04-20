@@ -23,6 +23,10 @@ const (
 	articleNullJitter    = 30 * time.Second
 	articleCacheNullMark = "__NULL__"
 	hotArticleSetKey      = "article:hotkeys"
+
+	// 首页“最新博客”（全部）：按时间倒序的 ZSET，仅保留最近 18 条（3 页 * 6 条）。
+	latestArticleZSetKey   = "article:latest"
+	latestArticleKeepCount = 18
 )
 
 type logicalArticleCache struct {
@@ -131,6 +135,106 @@ func (r *RedisArticleRepository) TrimLeaderboard(actionType string, keep int64) 
 	key := fmt.Sprintf("article:leaderboard:%s", actionType)
 	// 保留前 keep 名，删掉排名在 -(keep+1) 之前的
 	return r.client.ZRemRangeByRank(ctx, key, 0, -(keep + 1)).Err()
+}
+
+// AddLatestArticle 新文章写入首页“最新博客”（全部）ZSET。
+// score 使用创建时间（秒级），member 为文章 ID（字符串）。
+func (r *RedisArticleRepository) AddLatestArticle(aid uint64, createdAt time.Time) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	if aid == 0 {
+		return nil
+	}
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
+	ctx := context.Background()
+	member := strconv.FormatUint(aid, 10)
+	score := float64(createdAt.Unix())
+
+	pipe := r.client.TxPipeline()
+	pipe.ZAdd(ctx, latestArticleZSetKey, redis.Z{Score: score, Member: member})
+	// 只保留最新 18 条（删除更旧的）
+	pipe.ZRemRangeByRank(ctx, latestArticleZSetKey, 0, -(int64(latestArticleKeepCount)+1))
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// GetLatestArticleIDs 获取首页“最新博客”（全部）指定页的文章 ID 列表，并返回 ZSET 总数（最多 18）。
+func (r *RedisArticleRepository) GetLatestArticleIDs(page int, size int) ([]uint64, int64, error) {
+	if r == nil || r.client == nil {
+		return []uint64{}, 0, nil
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 6
+	}
+
+	ctx := context.Background()
+	total, err := r.client.ZCard(ctx, latestArticleZSetKey).Result()
+	if err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []uint64{}, 0, nil
+	}
+
+	start := int64((page - 1) * size)
+	stop := start + int64(size) - 1
+	members, err := r.client.ZRevRange(ctx, latestArticleZSetKey, start, stop).Result()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	ids := make([]uint64, 0, len(members))
+	for _, s := range members {
+		id, _ := strconv.ParseUint(s, 10, 64)
+		if id > 0 {
+			ids = append(ids, id)
+		}
+	}
+
+	// total 可能 >18（理论不会，因为 AddLatestArticle 会 trim），这里再兜底裁剪。
+	if total > int64(latestArticleKeepCount) {
+		total = int64(latestArticleKeepCount)
+	}
+	return ids, total, nil
+}
+
+// SeedLatestArticles 当 ZSET 为空时，用 DB 的最新 18 条回填。
+func (r *RedisArticleRepository) SeedLatestArticles(articles []*models.Article) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	if len(articles) == 0 {
+		return nil
+	}
+
+	zs := make([]redis.Z, 0, len(articles))
+	for _, a := range articles {
+		if a == nil || a.ID == 0 {
+			continue
+		}
+		ct := a.CreatedAt
+		if ct.IsZero() {
+			ct = time.Now()
+		}
+		zs = append(zs, redis.Z{Score: float64(ct.Unix()), Member: strconv.FormatUint(a.ID, 10)})
+	}
+	if len(zs) == 0 {
+		return nil
+	}
+
+	ctx := context.Background()
+	pipe := r.client.TxPipeline()
+	pipe.ZAdd(ctx, latestArticleZSetKey, zs...)
+	pipe.ZRemRangeByRank(ctx, latestArticleZSetKey, 0, -(int64(latestArticleKeepCount)+1))
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func (r *RedisArticleRepository) GetCachedArticle(aid uint64) (*models.Article, bool, bool, error) {

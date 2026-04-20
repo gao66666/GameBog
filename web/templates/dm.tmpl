@@ -12,6 +12,7 @@
       <div class="brand"><a href="/">GoBlog</a></div>
       <nav class="nav">
         <a href="/" id="navHome">首页</a>
+        <a href="/topics" id="navTopics">话题</a>
         <a href="/me" id="navMe">个人中心</a>
         <a href="/login" id="navLogin">登录</a>
       </nav>
@@ -20,33 +21,32 @@
 
   <main class="container" id="dmPage" data-peer-id="{{ .PeerID }}">
     <section class="card">
-      <div class="row" style="align-items:stretch;gap:12px">
-        <div style="flex:0 0 240px;min-width:200px">
-          <h3 style="margin-top:0">私信对象</h3>
-          <div id="dmPeers" class="list"></div>
-          <div id="dmPeersEmpty" class="muted">加载中...</div>
-        </div>
-
-        <div style="flex:1 1 auto;min-width:260px;display:flex;flex-direction:column;gap:10px">
-          <div class="row" style="justify-content:space-between;align-items:flex-end">
-            <h3 id="dmChatTitle" style="margin-top:0">消息</h3>
+      <div class="dm-shell">
+        <aside class="dm-sidebar">
+          <div class="dm-sidebar-hd">
+            <div class="dm-sidebar-title">消息列表</div>
             <div class="muted" id="dmStatus"></div>
           </div>
+          <div id="dmPeers" class="dm-peers"></div>
+          <div id="dmPeersEmpty" class="muted dm-peers-empty">加载中...</div>
+        </aside>
 
-          <div id="dmMessages" class="list" style="flex:1 1 auto;overflow:auto;max-height:60vh"></div>
-          <div id="dmMessagesEmpty" class="muted">请选择左侧私信对象</div>
+        <section class="dm-chat">
+          <header class="dm-chat-hd">
+            <div class="dm-chat-title" id="dmChatTitle">消息</div>
+          </header>
 
-          <form id="dmForm" class="form" style="margin-top:0">
-            <label>
-              <div class="label">发送消息</div>
-              <textarea id="dmInput" rows="3" maxlength="500" placeholder="输入内容..." required></textarea>
-            </label>
-            <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap">
+          <div id="dmMessages" class="dm-messages"></div>
+          <div id="dmMessagesEmpty" class="muted dm-messages-empty">请选择左侧消息对象</div>
+
+          <form id="dmForm" class="dm-compose">
+            <textarea id="dmInput" rows="3" maxlength="500" placeholder="输入内容..." required></textarea>
+            <div class="dm-compose-row">
               <button type="submit" id="dmSendBtn">发送</button>
               <div class="muted" id="dmMsg"></div>
             </div>
           </form>
-        </div>
+        </section>
       </div>
     </section>
   </main>

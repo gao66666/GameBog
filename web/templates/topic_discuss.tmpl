@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GoBlog - 话题讨论区</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container row">
+      <div class="brand"><a href="/">GoBlog</a></div>
+      <nav class="nav">
+        <a href="/" id="navHome">首页</a>
+        <a href="/topics" id="navTopics">话题</a>
+        <a href="/me" id="navMe">个人中心</a>
+        <a href="/login" id="navLogin">登录</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container" id="topicPage" data-topic-id="{{ .TopicID }}">
+    <section class="card">
+      <h1 id="topicTitle" style="margin-top:0">加载中...</h1>
+      <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap;margin-top:8px">
+        <a href="/topic/{{ .TopicID }}" style="display:inline-block;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:#fff;color:var(--text);text-decoration:none">返回话题详情</a>
+      </div>
+      <div class="muted" id="topicMeta" style="margin-top:8px"></div>
+    </section>
+
+    <section class="card">
+      <h2 style="margin-top:0">讨论区</h2>
+
+      <div class="chat-box" id="topicChatBox">
+        <div id="topicDiscussions"></div>
+        <div class="muted" id="topicDiscussionsEmpty" style="display:none">暂无消息</div>
+      </div>
+
+      <form id="topicDiscussionForm" class="chat-input" style="margin-top:10px">
+        <textarea id="topicDiscussionInput" rows="2" maxlength="500" placeholder="发消息（Enter 发送，Shift+Enter 换行）" required></textarea>
+        <button type="submit" style="white-space:nowrap">发送</button>
+      </form>
+      <div class="muted" id="topicDiscussionMsg"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/topic.js"></script>
+</body>
+</html>

@@ -92,3 +92,14 @@ LIMIT ?
 func (r *DMRepository) DeleteExpired(before time.Time) error {
 	return r.db.Where("expire_at <= ?", before).Delete(&models.DirectMessage{}).Error
 }
+
+// DeleteConversation 删除 userID 与 peerID 之间的全部私信（双向）。
+func (r *DMRepository) DeleteConversation(userID, peerID uint64) error {
+	if userID == 0 || peerID == 0 {
+		return gorm.ErrInvalidData
+	}
+	return r.db.Where(
+		r.db.Where("from_user_id = ? AND to_user_id = ?", userID, peerID).
+			Or("from_user_id = ? AND to_user_id = ?", peerID, userID),
+	).Delete(&models.DirectMessage{}).Error
+}

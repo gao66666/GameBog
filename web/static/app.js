@@ -56,6 +56,7 @@
         const navLogin = qs('navLogin');
         const navLogout = qs('navLogout');
         const navHome = qs('navHome');
+        const navTopics = qs('navTopics');
         const navMe = qs('navMe');
         // 登录/退出按钮 & 个人中心 / 登录链接显示控制
         if (navLogin) {
@@ -82,6 +83,9 @@
         if (navHome) {
             navHome.classList.toggle('nav-active', path === '/');
         }
+        if (navTopics) {
+            navTopics.classList.toggle('nav-active', path === '/topics' || path.indexOf('/topic/') === 0);
+        }
         if (navMe) {
             navMe.classList.toggle('nav-active', path === '/me');
         }
@@ -89,7 +93,8 @@
 
     function wsURL(token) {
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        return proto + '//' + location.host + '/api/v1/ws?token=' + encodeURIComponent(token);
+        const sync = (location.pathname === '/me') ? '&sync=1' : '';
+        return proto + '//' + location.host + '/api/v1/ws?token=' + encodeURIComponent(token) + sync;
     }
 
     function dispatchWSEvent(type, detail) {

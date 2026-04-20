@@ -41,3 +41,19 @@ func EditorPage(c *gin.Context) {
 		"ArticleID": c.Query("id"),
 	})
 }
+
+func TopicsPage(c *gin.Context) {
+	c.HTML(http.StatusOK, "topics.tmpl", gin.H{})
+}
+
+func TopicPage(c *gin.Context) {
+	c.HTML(http.StatusOK, "topic.tmpl", gin.H{
+		"TopicID": c.Param("id"),
+	})
+}
+
+func TopicDiscussPage(c *gin.Context) {
+	c.HTML(http.StatusOK, "topic_discuss.tmpl", gin.H{
+		"TopicID": c.Param("id"),
+	})
+}

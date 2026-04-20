@@ -23,6 +23,28 @@ type NotificationHandler struct {
 	redisNotification *database.RedisNotificationRepository
 }
 
+// PushNotification 用于“无 Kafka 时”的降级直推：只要用户在线（有活跃 WS 连接）就直接写入。
+// 返回 true 表示已成功推送。
+func (nh *NotificationHandler) PushNotification(userID uint64, payload []byte) bool {
+	if nh == nil || userID == 0 || len(payload) == 0 {
+		return false
+	}
+	val, ok := nh.Conns.Load(userID)
+	if !ok {
+		return false
+	}
+	s, ok := val.(*melody.Session)
+	if !ok || s == nil || s.IsClosed() {
+		nh.Conns.Delete(userID)
+		return false
+	}
+	if err := s.Write(payload); err != nil {
+		nh.Conns.Delete(userID)
+		return false
+	}
+	return true
+}
+
 func NewNotificationHandler(notificationRepo *database.NotificationRepository, redisNotification *database.RedisNotificationRepository) *NotificationHandler {
 	m := melody.New()
 	nh := &NotificationHandler{
@@ -38,7 +60,12 @@ func NewNotificationHandler(notificationRepo *database.NotificationRepository, r
 			// 签到：UID -> Session
 			userID := uid.(uint64)
 			nh.Conns.Store(userID, s)
-			go nh.syncUnreadNotifications(userID, s)
+			// 只在打开 /me 时才同步离线通知（避免在其它页面登录就把通知拉走/标已读）
+			if v, ok := s.Get("syncUnread"); ok {
+				if b, ok := v.(bool); ok && b {
+					go nh.syncUnreadNotifications(userID, s)
+				}
+			}
 		}
 	})
 
@@ -71,8 +98,10 @@ func (nh *NotificationHandler) HandleWS(c *gin.Context) {
 
 	// 3. 升级连接
 	// 将解析出的 UID 存入 Melody Session 的 Keys 中
+	syncUnread := c.Query("sync") == "1"
 	err = nh.Meld.HandleRequestWithKeys(c.Writer, c.Request, map[string]interface{}{
-		"userID": claims.UserID,
+		"userID":     claims.UserID,
+		"syncUnread": syncUnread,
 	})
 
 	if err != nil {

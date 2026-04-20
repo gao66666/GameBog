@@ -26,6 +26,22 @@ func NewDMService(dmRepo *database.DMRepository, userRepo *database.UserReposito
 	return s
 }
 
+func (s *DMService) ResolveUserName(userID uint64) string {
+	if userID == 0 {
+		return ""
+	}
+	name := fmt.Sprintf("UID:%d", userID)
+	if s == nil || s.userRepo == nil {
+		return name
+	}
+	if u, err := s.userRepo.GetUserByID(userID); err == nil {
+		if u != nil && u.Name != "" {
+			return u.Name
+		}
+	}
+	return name
+}
+
 func (s *DMService) startCleanup() {
 	if s == nil || s.dmRepo == nil {
 		return
@@ -147,4 +163,46 @@ func (s *DMService) SendMessage(fromUserID uint64, toUserID uint64, content stri
 	}
 
 	return m, nil
+}
+
+func (s *DMService) IncrUnread(userID uint64) {
+	if s == nil || s.redisRepo == nil || userID == 0 {
+		return
+	}
+	_, _ = s.redisRepo.IncrUnread(userID, 1)
+}
+
+func (s *DMService) GetUnreadCount(userID uint64) (int64, error) {
+	if s == nil || s.redisRepo == nil || userID == 0 {
+		return 0, nil
+	}
+	return s.redisRepo.GetUnread(userID)
+}
+
+func (s *DMService) ClearUnread(userID uint64) {
+	if s == nil || s.redisRepo == nil || userID == 0 {
+		return
+	}
+	_ = s.redisRepo.ClearUnread(userID)
+}
+
+func (s *DMService) DeleteConversation(userID uint64, peerID uint64) error {
+	if s == nil || s.dmRepo == nil || userID == 0 || peerID == 0 {
+		return fmt.Errorf("invalid user_id/peer_id")
+	}
+
+	if err := s.dmRepo.DeleteConversation(userID, peerID); err != nil {
+		return err
+	}
+
+	// 清空双方会话缓存（列表 + 会话消息）
+	if s.redisRepo != nil {
+		_ = s.redisRepo.InvalidatePeers(userID)
+		_ = s.redisRepo.InvalidatePeers(peerID)
+		_ = s.redisRepo.InvalidateConversation(userID, peerID)
+		_ = s.redisRepo.InvalidateConversation(peerID, userID)
+		_ = s.redisRepo.ClearUnread(userID)
+		_ = s.redisRepo.ClearUnread(peerID)
+	}
+	return nil
 }

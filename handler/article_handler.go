@@ -13,10 +13,13 @@ import (
 	"github.com/gao66666/GoBlog/tool"
 	"github.com/gin-gonic/gin"
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 	"go.uber.org/zap"
 )
 
 const anonSessionCookieName = "gb_sid"
+
+const articleSummaryMaxRunes = 500
 
 func normalizeTagNames(in []string) ([]string, bool) {
 	out := make([]string, 0, len(in))
@@ -94,6 +97,16 @@ func (h *ArticleHandler) CreateArticleHandle(c *gin.Context) {
 		return
 	}
 
+	summary := strings.TrimSpace(p.Summary)
+	if summary == "" {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	if len([]rune(summary)) > articleSummaryMaxRunes {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
 	tagNames, ok := normalizeTagNames(p.Tags)
 	if !ok {
 		tool.ResponseError(c, ErrCodeInvalidParam)
@@ -115,7 +128,7 @@ func (h *ArticleHandler) CreateArticleHandle(c *gin.Context) {
 		ID:         tool.GenerateID(),
 		Title:      p.Title,
 		Content:    p.Content,
-		Summary:    p.Content, // 自动截取正文前100字作为摘要
+		Summary:    summary,
 		AuthorID:   userID.(uint64),
 		CategoryID: p.CategoryID, // 保持命名统一
 	}
@@ -132,7 +145,9 @@ func (h *ArticleHandler) CreateArticleHandle(c *gin.Context) {
 	}
 
 	zap.L().Info("创建文章成功")
-	tool.ResponseSuccess(c, gin.H{"article_id": article.ID}, "创建文章成功")
+	// 注意：雪花 ID（uint64）直接序列化为 JSON number 会在 JS 端丢失精度，
+	// 统一返回字符串，前端可安全拼 URL/回填编辑态。
+	tool.ResponseSuccess(c, gin.H{"article_id": strconv.FormatUint(article.ID, 10)}, "创建文章成功")
 }
 
 func (h *ArticleHandler) UpdateArticleHandle(c *gin.Context) {
@@ -153,15 +168,21 @@ func (h *ArticleHandler) UpdateArticleHandle(c *gin.Context) {
 	userID := uid.(uint64)
 
 	var body struct {
-		Title   string   `json:"title"`
-		Content string   `json:"content"`
-		Tags    []string `json:"tags"`
+		Title      string   `json:"title"`
+		Summary    string   `json:"summary"`
+		Content    string   `json:"content"`
+		Tags       []string `json:"tags"`
+		CategoryID uint     `json:"section_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		tool.ResponseError(c, ErrCodeInvalidParam)
 		return
 	}
-	if strings.TrimSpace(body.Title) == "" || strings.TrimSpace(body.Content) == "" {
+	if strings.TrimSpace(body.Title) == "" || strings.TrimSpace(body.Summary) == "" || strings.TrimSpace(body.Content) == "" {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	if len([]rune(strings.TrimSpace(body.Summary))) > articleSummaryMaxRunes {
 		tool.ResponseError(c, ErrCodeInvalidParam)
 		return
 	}
@@ -172,8 +193,8 @@ func (h *ArticleHandler) UpdateArticleHandle(c *gin.Context) {
 		return
 	}
 
-	if err := h.se.UpdateArticle(userID, id, body.Title, body.Content, tagNames); err != nil {
-		tool.ResponseError(c, CodeServerBusy)
+	if err := h.se.UpdateArticle(userID, id, body.Title, strings.TrimSpace(body.Summary), body.Content, tagNames, body.CategoryID); err != nil {
+		tool.ResponseError(c, err)
 		return
 	}
 
@@ -199,6 +220,10 @@ func (h *ArticleHandler) ReadArticleHandle(c *gin.Context) {
 	// Markdown 渲染（禁止原始 HTML，避免 XSS）
 	var htmlBuf bytes.Buffer
 	if err := goldmark.New(
+		goldmark.WithExtensions(
+			extension.Table,
+			extension.Strikethrough,
+		),
 		goldmark.WithParserOptions(),
 	).Convert([]byte(article.Content), &htmlBuf); err != nil {
 		zap.L().Warn("render markdown failed", zap.Error(err))
@@ -213,6 +238,8 @@ func (h *ArticleHandler) ReadArticleHandle(c *gin.Context) {
 		"view_count":   article.ViewCount,
 		"like_count":   article.LikeCount,
 		"author_id":    strconv.FormatUint(article.AuthorID, 10),
+		"category_id":  article.CategoryID,
+		"categoryId":   article.CategoryID,
 		"created_at":   article.CreatedAt.Format("2006-01-02 15:04:05"),
 		"tags":         article.Tags,
 	}, "查询成功")
@@ -241,11 +268,13 @@ func (h *ArticleHandler) GetArticleListHandler(c *gin.Context) {
 
 }
 
-// GetLatestArticlesPublic 提供给首页使用的公开文章列表（按创建时间倒序）。
+// GetLatestArticlesPublic 提供给首页使用的公开文章列表。
+// - 首页“全部”：Redis ZSET（最多 18 条，3 页 * 6 条），为空回源 DB 并回填
+// - 其他场景（带 author_id）：仍按 DB 创建时间倒序分页
 func (h *ArticleHandler) GetLatestArticlesPublic(c *gin.Context) {
 	authorIDStr := c.Query("author_id")
 	pageStr := c.DefaultQuery("page", "1")
-	sizeStr := c.DefaultQuery("size", "10")
+	sizeStr := c.DefaultQuery("size", "6")
 
 	authorID, _ := strconv.ParseUint(authorIDStr, 10, 64)
 	page, _ := strconv.Atoi(pageStr)
@@ -254,7 +283,19 @@ func (h *ArticleHandler) GetLatestArticlesPublic(c *gin.Context) {
 		page = 1
 	}
 	if size <= 0 {
-		size = 10
+		size = 6
+	}
+
+	// 首页“全部”：不传 author_id（即 0）
+	if authorID == 0 {
+		list, total, err := h.se.GetLatestArticlesAll(page, size)
+		if err != nil {
+			zap.L().Error("GetLatestArticlesAll failed", zap.Error(err))
+			tool.ResponseErrorWithMsg(c, "文章列表不可用")
+			return
+		}
+		tool.ResponseSuccess(c, gin.H{"article_list": list, "total": total}, "查询成功")
+		return
 	}
 
 	list, total, err := h.se.GetArticleList(authorID, page, size)
@@ -264,6 +305,30 @@ func (h *ArticleHandler) GetLatestArticlesPublic(c *gin.Context) {
 		return
 	}
 
+	tool.ResponseSuccess(c, gin.H{"article_list": list, "total": total}, "查询成功")
+}
+
+// GetFollowingLatestArticles 仅关注：拉取关注用户近30天文章，并按阅读量倒序分页。
+func (h *ArticleHandler) GetFollowingLatestArticles(c *gin.Context) {
+	pageStr := c.DefaultQuery("page", "1")
+	sizeStr := c.DefaultQuery("size", "6")
+
+	page, _ := strconv.Atoi(pageStr)
+	size, _ := strconv.Atoi(sizeStr)
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 6
+	}
+
+	userID := c.GetUint64("userID")
+	list, total, err := h.se.GetFollowingLatestArticlesByView(userID, page, size)
+	if err != nil {
+		zap.L().Error("GetFollowingLatestArticles failed", zap.Error(err))
+		tool.ResponseErrorWithMsg(c, "文章列表不可用")
+		return
+	}
 	tool.ResponseSuccess(c, gin.H{"article_list": list, "total": total}, "查询成功")
 }
 

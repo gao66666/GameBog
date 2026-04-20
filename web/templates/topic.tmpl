@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GoBlog - 话题详情</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container row">
+      <div class="brand"><a href="/">GoBlog</a></div>
+      <nav class="nav">
+        <a href="/" id="navHome">首页</a>
+        <a href="/topics" id="navTopics">话题</a>
+        <a href="/me" id="navMe">个人中心</a>
+        <a href="/login" id="navLogin">登录</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container" id="topicPage" data-topic-id="{{ .TopicID }}">
+    <section class="card" style="position:relative;">
+      <h1 id="topicTitle" style="margin-top:0;display:inline-block">加载中...</h1>
+      <button id="topicDeleteBtn" title="删除临时话题" style="display:none;position:absolute;top:18px;right:18px;">
+        <span style="font-size:22px;line-height:1;">🗑</span>
+      </button>
+
+      <div id="discuss" style="margin-top:12px">
+        <div class="chat-box" id="topicChatBox">
+          <div id="topicDiscussions"></div>
+          <div class="muted" id="topicDiscussionsEmpty" style="display:none">暂无消息</div>
+        </div>
+
+        <form id="topicDiscussionForm" class="chat-input" style="margin-top:10px">
+          <textarea id="topicDiscussionInput" rows="2" maxlength="500" placeholder="发消息（Enter 发送，Shift+Enter 换行）" required></textarea>
+          <button type="submit" style="white-space:nowrap">发送</button>
+        </form>
+        <div class="muted" id="topicDiscussionMsg"></div>
+      </div>
+
+      <div class="muted" id="topicMeta" style="margin-top:10px"></div>
+    </section>
+
+    <section class="card">
+      <div class="row" style="align-items:baseline;gap:10px">
+        <h2 style="margin:0">最新文章</h2>
+        <a href="/editor?topic_id={{ .TopicID }}" class="linklike">新建文章</a>
+      </div>
+      <div id="topicArticles" class="list" style="margin-top:12px"></div>
+      <div class="muted" id="topicArticlesEmpty" style="display:none">暂无文章</div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/topic.js"></script>
+</body>
+</html>

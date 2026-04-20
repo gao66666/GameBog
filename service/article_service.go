@@ -10,6 +10,7 @@ import (
 	"github.com/gao66666/GoBlog/database"
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/mq"
+	"github.com/gao66666/GoBlog/tool"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -35,6 +36,17 @@ func buildArticleSummary(content string) string {
 	return string(r)
 }
 
+func normalizeSummaryText(in string) string {
+	// 摘要由用户输入：这里只做最小规范化，避免“看起来被覆盖”。
+	// - 去掉首尾空白
+	// - 统一换行符（不压缩空白、不强制单行）
+	s := strings.TrimSpace(in)
+	if s == "" {
+		return ""
+	}
+	return strings.ReplaceAll(s, "\r\n", "\n")
+}
+
 const (
 	hotKeyRefreshInterval = 30 * time.Second
 	hotKeyTopN            = 200
@@ -48,7 +60,9 @@ type ArticleService struct {
 	articleDB   *database.ArticleRepository
 	userRepo    *database.UserRepository
 	commentRepo *database.CommentRepository
+	followRepo  *database.FollowRepository
 	redisRepo   *database.RedisArticleRepository
+	topicRepo   *database.TopicRepository
 	guard       *cache.ArticleGuard
 }
 
@@ -82,12 +96,14 @@ func (s *ArticleService) fillCommentCounts(articles []*models.Article) {
 	}
 }
 
-func NewArticleService(dataRepo *database.ArticleRepository, userRepo *database.UserRepository, commentRepo *database.CommentRepository, rs *database.RedisArticleRepository) *ArticleService {
+func NewArticleService(dataRepo *database.ArticleRepository, userRepo *database.UserRepository, commentRepo *database.CommentRepository, followRepo *database.FollowRepository, rs *database.RedisArticleRepository, topicRepo *database.TopicRepository) *ArticleService {
 	svc := &ArticleService{
 		articleDB:   dataRepo,
 		userRepo:    userRepo,
 		commentRepo: commentRepo,
+		followRepo:  followRepo,
 		redisRepo:   rs,
+		topicRepo:   topicRepo,
 		guard:       cache.NewArticleGuard(1_000_000, 0.01),
 	}
 	svc.warmBloomFilter()
@@ -175,8 +191,24 @@ func (s *ArticleService) rebuildArticleCacheAsync(id uint64) {
 
 func (s *ArticleService) CreateArticle(article *models.Article) error {
 	if article != nil {
-		// 规范化摘要
-		article.Summary = buildArticleSummary(article.Content)
+		// 摘要要求前端必填，这里仅做最小规范化，不再用正文截取覆盖
+		article.Summary = normalizeSummaryText(article.Summary)
+
+		// 话题校验：必须是有效话题；不传则回填默认话题
+		if s.topicRepo != nil {
+			now := time.Now()
+			if article.CategoryID == 0 {
+				defID, err := s.topicRepo.EnsureDefaultTopic()
+				if err != nil {
+					return err
+				}
+				article.CategoryID = defID
+			} else {
+				if _, err := s.topicRepo.GetActiveTopicByID(article.CategoryID, now); err != nil {
+					return tool.NewBizError(400, 40001, "话题不存在或已过期")
+				}
+			}
+		}
 
 		// 处理 tags（handler 传入的 article.Tags 只带 Name）
 		if len(article.Tags) > 0 {
@@ -202,6 +234,7 @@ func (s *ArticleService) CreateArticle(article *models.Article) error {
 	}
 	s.guard.Add(article.ID)
 	_ = s.redisRepo.SetArticleCache(article.ID, article)
+	_ = s.redisRepo.AddLatestArticle(article.ID, article.CreatedAt)
 	s.syncArticleToSearch(article)
 	return nil
 }
@@ -423,12 +456,111 @@ func (s *ArticleService) GetArticleList(authorID uint64, page int, size int) ([]
 	return articleList, total, nil
 }
 
+// GetLatestArticlesAll 首页“最新博客”（全部）：
+// - Redis ZSET 按时间倒序，仅保留最近 18 条（3 页 * 6 条）
+// - 若 Redis 为空，则回源 DB 拉取最新 18 条并回填 Redis
+func (s *ArticleService) GetLatestArticlesAll(page int, size int) ([]*models.Article, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 6
+	}
+
+	// 先读 Redis ZSET
+	ids, total, err := s.redisRepo.GetLatestArticleIDs(page, size)
+	if err != nil {
+		zap.L().Warn("GetLatestArticleIDs failed, fallback to DB", zap.Error(err))
+		ids = nil
+		total = 0
+	}
+
+	// Redis 为空：回源 DB 拉取最新 18 条并回填
+	if total == 0 {
+		const keep = 18
+		all, _, dbErr := s.articleDB.GetArticleList(0, 1, keep)
+		if dbErr != nil {
+			return nil, 0, dbErr
+		}
+		_ = s.redisRepo.SeedLatestArticles(all)
+
+		// 只暴露最多 18 条，total 也按此计算（对应首页仅 3 页）
+		total = int64(len(all))
+		start := (page - 1) * size
+		if start >= len(all) {
+			return []*models.Article{}, total, nil
+		}
+		end := start + size
+		if end > len(all) {
+			end = len(all)
+		}
+		out := all[start:end]
+		s.fillCommentCounts(out)
+		return out, total, nil
+	}
+
+	// Redis 命中：批量查 DB，再按 ids 顺序组装
+	if len(ids) == 0 {
+		return []*models.Article{}, total, nil
+	}
+
+	var got []*models.Article
+	if dbErr := s.articleDB.GetArticlesByIDs(ids, &got); dbErr != nil {
+		return nil, 0, dbErr
+	}
+
+	m := make(map[uint64]*models.Article, len(got))
+	for _, a := range got {
+		if a == nil {
+			continue
+		}
+		m[a.ID] = a
+	}
+	out := make([]*models.Article, 0, len(ids))
+	for _, id := range ids {
+		if a := m[id]; a != nil {
+			out = append(out, a)
+		}
+	}
+
+	s.fillCommentCounts(out)
+	return out, total, nil
+}
+
+// GetFollowingLatestArticlesByView 仅关注：
+// 拉取当前用户关注的人在近30天内发布的文章，并按阅读量倒序分页。
+func (s *ArticleService) GetFollowingLatestArticlesByView(followerID uint64, page int, size int) ([]*models.Article, int64, error) {
+	if followerID == 0 {
+		return []*models.Article{}, 0, nil
+	}
+	if s.followRepo == nil {
+		return []*models.Article{}, 0, nil
+	}
+
+	followingIDs, err := s.followRepo.GetFollowingIDs(followerID, 5000)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(followingIDs) == 0 {
+		return []*models.Article{}, 0, nil
+	}
+
+	since := time.Now().AddDate(0, 0, -30)
+	list, total, err := s.articleDB.GetArticlesByAuthorsSinceOrderByView(followingIDs, since, page, size)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	s.fillCommentCounts(list)
+	return list, total, nil
+}
+
 func (s *ArticleService) DeleteArticle(userID uint64, articleID uint64) error {
 	// 只有作者本人才能删除文章
 	return s.articleDB.DeleteArticle(articleID, userID)
 }
 
-func (s *ArticleService) UpdateArticle(userID uint64, articleID uint64, title, content string, tagNames []string) error {
+func (s *ArticleService) UpdateArticle(userID uint64, articleID uint64, title, summary, content string, tagNames []string, categoryID uint) error {
 	article, err := s.articleDB.GetArticleByID(articleID)
 	if err != nil {
 		return err
@@ -437,9 +569,19 @@ func (s *ArticleService) UpdateArticle(userID uint64, articleID uint64, title, c
 		return fmt.Errorf("no permission to edit this article")
 	}
 
+	// 可选更新话题（0 表示保持不变）
+	if categoryID != 0 {
+		if s.topicRepo != nil {
+			if _, err := s.topicRepo.GetActiveTopicByID(categoryID, time.Now()); err != nil {
+				return tool.NewBizError(400, 40001, "话题不存在或已过期")
+			}
+		}
+		article.CategoryID = categoryID
+	}
+
 	article.Title = title
+	article.Summary = normalizeSummaryText(summary)
 	article.Content = content
-	article.Summary = buildArticleSummary(content)
 	article.UpdatedAt = time.Now()
 
 	// 更新 tags

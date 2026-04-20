@@ -26,6 +26,10 @@ func dmConvKey(userID uint64, peerID uint64) string {
 	return fmt.Sprintf("dm:conv:%d:%d", userID, peerID)
 }
 
+func dmUnreadKey(userID uint64) string {
+	return fmt.Sprintf("dm:unread:%d", userID)
+}
+
 func (r *RedisDMRepository) GetPeers(userID uint64) ([]models.DMPeer, bool, error) {
 	ctx := context.Background()
 	b, err := r.client.Get(ctx, dmPeersKey(userID)).Bytes()
@@ -92,4 +96,35 @@ func (r *RedisDMRepository) InvalidateConversation(userID uint64, peerID uint64)
 func (r *RedisDMRepository) InvalidatePeers(userID uint64) error {
 	ctx := context.Background()
 	return r.client.Del(ctx, dmPeersKey(userID)).Err()
+}
+
+func (r *RedisDMRepository) IncrUnread(userID uint64, delta int64) (int64, error) {
+	if userID == 0 {
+		return 0, nil
+	}
+	if delta == 0 {
+		delta = 1
+	}
+	ctx := context.Background()
+	return r.client.IncrBy(ctx, dmUnreadKey(userID), delta).Result()
+}
+
+func (r *RedisDMRepository) GetUnread(userID uint64) (int64, error) {
+	if userID == 0 {
+		return 0, nil
+	}
+	ctx := context.Background()
+	v, err := r.client.Get(ctx, dmUnreadKey(userID)).Int64()
+	if err == redis.Nil {
+		return 0, nil
+	}
+	return v, err
+}
+
+func (r *RedisDMRepository) ClearUnread(userID uint64) error {
+	if userID == 0 {
+		return nil
+	}
+	ctx := context.Background()
+	return r.client.Del(ctx, dmUnreadKey(userID)).Err()
 }

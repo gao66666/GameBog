@@ -38,6 +38,7 @@ type Tag struct {
 
 type ParamPostArticle struct {
 	Title      string   `json:"title" binding:"required"`
+	Summary    string   `json:"summary" binding:"required"`
 	Content    string   `json:"content" binding:"required"`
 	Tags       []string `json:"tags"`
 	CategoryID uint     `json:"section_id"` // 板块ID，可以先传0

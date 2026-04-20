@@ -1,6 +1,15 @@
 (function () {
     const { qs, api } = window.GoBlog;
 
+    function escapeHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     function articleLink(id, title) {
         const a = document.createElement('a');
         a.href = '/article/' + encodeURIComponent(id);
@@ -70,7 +79,17 @@
 
             const meta = document.createElement('div');
             meta.className = 'muted';
-            meta.innerHTML = buildStatsLine(a);
+
+            const authorId = a.author_id || a.authorId;
+            const authorName = a.author_name || a.authorName;
+            const parts = [];
+            if (authorId) {
+                const safeName = escapeHtml(authorName || ('UID:' + authorId));
+                parts.push('<a href="/u/' + encodeURIComponent(String(authorId)) + '">作者 ' + safeName + '</a>');
+            }
+            const stats = buildStatsLine(a);
+            if (stats) parts.push(stats);
+            meta.innerHTML = parts.join(' · ');
 
             div.appendChild(title);
             if (summary.textContent) div.appendChild(summary);
@@ -85,19 +104,18 @@
             left.style.flex = '1 1 auto';
 
             const name = document.createElement('div');
-            name.textContent = u.name || u.Name || ('用户 ' + (u.id || u.ID || ''));
-
-            const meta = document.createElement('div');
-            meta.className = 'muted';
-            const tel = u.tel || u.Tel || '';
-            const email = u.email || u.Email || '';
-            const parts = [];
-            if (tel) parts.push('电话 ' + tel);
-            if (email) parts.push('邮箱 ' + email);
-            meta.textContent = parts.join(' · ');
+            const uid = u.id || u.ID || u.user_id || u.userId;
+            const uname = u.name || u.Name || u.user_name || u.userName || ('用户 ' + (uid || ''));
+            if (uid) {
+                const a = document.createElement('a');
+                a.href = '/u/' + encodeURIComponent(String(uid));
+                a.textContent = uname;
+                name.appendChild(a);
+            } else {
+                name.textContent = uname;
+            }
 
             left.appendChild(name);
-            if (meta.textContent) left.appendChild(meta);
 
             div.appendChild(left);
             userRoot.appendChild(div);

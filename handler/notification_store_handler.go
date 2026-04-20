@@ -30,14 +30,14 @@ func NewNotificationStoreHandler(repo *database.NotificationRepository) *Notific
 }
 
 func (h *NotificationStoreHandler) StartFlushTicks() {
-	ticker := time.NewTicker(h.flushInterval)
-	go func() {
-		for range ticker.C {
-			if err := h.flush(); err != nil {
-				zap.L().Warn("通知批量落库失败", zap.Error(err))
-			}
-		}
-	}()
+	       ticker := time.NewTicker(h.flushInterval)
+	       go func() {
+		       for range ticker.C {
+			       if err := h.flush(); err != nil {
+				       zap.L().Warn("通知批量落库失败", zap.Error(err))
+			       }
+		       }
+	       }()
 }
 
 func (h *NotificationStoreHandler) ProcessNotificationStoreMessage(ctx context.Context, payload []byte) error {

@@ -4,7 +4,7 @@
     let page = 1;
     const size = 10;
     let total = 0;
-    let onlineTimer = 0;
+    let onlineRefreshAt = 0;
 
     function pageEl() { return qs('userPage'); }
 
@@ -53,6 +53,14 @@
         } catch {
             setText('userOnline', '-');
         }
+    }
+
+    function scheduleOnlineRefresh(uid) {
+        const now = Date.now();
+        // 避免频繁触发（例如 focus + visibilitychange 连续发生）
+        if (now - onlineRefreshAt < 800) return;
+        onlineRefreshAt = now;
+        loadOnline(uid);
     }
 
     function setupActions(uid) {
@@ -156,7 +164,8 @@
 
                 const summary = document.createElement('div');
                 summary.className = 'muted';
-                summary.textContent = String(a.summary || '').slice(0, 160);
+                const s = a.summary || a.Summary || '';
+                summary.textContent = String(s).slice(0, 160);
 
                 const meta = document.createElement('div');
                 meta.className = 'muted';
@@ -188,10 +197,13 @@
 
         setupActions(uid);
 
-        // 在线状态轮询
+        // 在线状态：进入页面时拉一次；回到页面/重新聚焦时再拉一次即可
         await loadOnline(uid);
-        if (onlineTimer) clearInterval(onlineTimer);
-        onlineTimer = setInterval(function () { loadOnline(uid); }, 5000);
+        window.addEventListener('focus', function () { scheduleOnlineRefresh(uid); });
+        window.addEventListener('pageshow', function () { scheduleOnlineRefresh(uid); });
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) scheduleOnlineRefresh(uid);
+        });
 
         // 用户信息 + 文章列表
         try {

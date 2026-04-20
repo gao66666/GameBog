@@ -38,24 +38,92 @@
             const uid = String(p.user_id || p.userId || '');
             const name = String(p.user_name || p.userName || uid || '用户');
             const div = document.createElement('div');
-            div.className = 'item row';
-            div.style.cursor = 'pointer';
-            div.style.justifyContent = 'space-between';
-            div.style.alignItems = 'center';
+            div.className = 'dm-peer' + (uid === activePeer() ? ' active' : '');
+
+            const row = document.createElement('div');
+            row.className = 'dm-peer-row';
 
             const left = document.createElement('div');
+            left.className = 'dm-peer-name';
             left.textContent = name;
 
-            const right = document.createElement('div');
-            right.className = 'muted';
-            right.textContent = uid === activePeer() ? '当前' : '';
+            // 右侧下拉：垃圾筐图标（删除会话）
+            const actions = document.createElement('details');
+            actions.className = 'dm-peer-actions';
+            const sum = document.createElement('summary');
+            sum.className = 'dm-peer-actions-summary';
+            sum.setAttribute('aria-label', '更多');
+            sum.textContent = '▾';
 
-            div.appendChild(left);
-            div.appendChild(right);
+            // 打开下拉时不要触发“选中联系人/重新渲染”
+            sum.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+            });
+            actions.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+            });
 
-            div.onclick = function () {
+            const menu = document.createElement('div');
+            menu.className = 'dm-peer-actions-menu';
+            const trash = document.createElement('button');
+            trash.type = 'button';
+            trash.className = 'dm-peer-trash-btn';
+            trash.setAttribute('title', '删除与该用户的全部消息');
+            trash.setAttribute('aria-label', '删除聊天');
+            trash.textContent = '🗑';
+
+            trash.addEventListener('click', async function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (!uid) return;
+                if (!confirm('确定删除与该用户的全部消息吗？')) {
+                    actions.open = false;
+                    return;
+                }
+                try {
+                    await api('/api/v1/dm/conversation/delete', {
+                        method: 'POST',
+                        body: JSON.stringify({ peerId: String(uid) })
+                    });
+                    actions.open = false;
+                    // 如果删的是当前会话：清空右侧
+                    if (activePeer() === String(uid)) {
+                        activePeerId = '';
+                        setText('dmChatTitle', '消息');
+                        const msgRoot = qs('dmMessages');
+                        if (msgRoot) msgRoot.innerHTML = '';
+                        setText('dmMessagesEmpty', '请选择左侧消息对象');
+                    }
+                    await loadPeers();
+                    if (activePeer()) {
+                        await loadMessages();
+                    }
+                } catch (e) {
+                    setText('dmMsg', '删除失败：' + (e && e.message || ''));
+                }
+            });
+
+            menu.appendChild(trash);
+            actions.appendChild(sum);
+            actions.appendChild(menu);
+
+            row.appendChild(left);
+            row.appendChild(actions);
+
+            const meta = document.createElement('div');
+            meta.className = 'dm-peer-meta';
+            meta.textContent = 'UID ' + uid;
+
+            div.appendChild(row);
+            div.appendChild(meta);
+
+            div.addEventListener('click', function (ev) {
+                // 点击下拉区域不选中联系人
+                if (ev && ev.target && ev.target.closest && ev.target.closest('.dm-peer-actions')) {
+                    return;
+                }
                 selectPeer(uid, name);
-            };
+            });
 
             root.appendChild(div);
         });
@@ -88,23 +156,35 @@
 
         list.forEach((m) => {
             const from = String(m.fromUserId || m.from_user_id || '');
-            const content = String(m.content || '');
+            const content = String(m.content || '')
+                .replace(/\r\n/g, '\n')
+                .replace(/\r/g, '\n')
+                .replace(/\s+$/g, '');
             const sentAt = String(m.sentAt || m.sent_at || '');
 
-            const box = document.createElement('div');
-            box.className = 'item';
-            box.style.textAlign = (from && myId && from === myId) ? 'right' : 'left';
+            const isMe = (from && myId && from === myId);
 
-            const line = document.createElement('div');
-            line.textContent = content;
+            const row = document.createElement('div');
+            // 需求：我的消息在左，对方消息在右
+            row.className = 'dm-msg-row' + (isMe ? '' : ' other');
+
+            const bubbleWrap = document.createElement('div');
+            bubbleWrap.className = 'dm-bubble-wrap';
+
+            const bubble = document.createElement('div');
+            // 保持“我的消息”视觉区分（深色气泡），但方向按需求放左
+            bubble.className = 'dm-bubble' + (isMe ? ' me' : '');
+            bubble.textContent = content;
 
             const meta = document.createElement('div');
-            meta.className = 'muted';
+            meta.className = 'dm-meta';
             meta.textContent = sentAt;
 
-            box.appendChild(line);
-            if (sentAt) box.appendChild(meta);
-            root.appendChild(box);
+            bubbleWrap.appendChild(bubble);
+            if (sentAt) bubbleWrap.appendChild(meta);
+
+            row.appendChild(bubbleWrap);
+            root.appendChild(row);
         });
 
         // 滚动到底部
@@ -141,7 +221,9 @@
     }
 
     async function sendMessage(ev) {
-        ev.preventDefault();
+        if (ev && typeof ev.preventDefault === 'function') {
+            ev.preventDefault();
+        }
         const pid = activePeer();
         const input = qs('dmInput');
         const msg = qs('dmMsg');
@@ -188,12 +270,28 @@
                 return;
             }
 
-            if (!obj || obj.type !== 'dm') return;
+            if (!obj || !obj.type) return;
+
+            // 登录后离线未读提示：自动拉取一次并清零
+            if (obj.type === 'dm_unread') {
+                const cnt = Number(obj.count || 0) || 0;
+                if (cnt <= 0) return;
+                loadPeers().then(function () {
+                    if (activePeer()) return loadMessages();
+                }).then(function () {
+                    return api('/api/v1/dm/unread_clear', { method: 'POST' });
+                }).then(function () {
+                    try { localStorage.removeItem('gb_dm_hint'); } catch { /* ignore */ }
+                }).catch(function () { });
+                return;
+            }
+
+            if (obj.type !== 'dm') return;
 
             const me = getAuth();
             const myId = String(me.userId || '');
-            const toId = String(obj.toUserId || '');
-            const fromId = String(obj.fromUserId || '');
+            const toId = String(obj.toUserId || obj.user_id || obj.userId || '');
+            const fromId = String(obj.fromUserId || obj.sender_id || obj.senderId || '');
 
             // 只处理发给我的消息
             if (!myId || toId !== myId) return;
@@ -221,7 +319,35 @@
         const form = qs('dmForm');
         if (form) form.addEventListener('submit', sendMessage);
 
+        const input = qs('dmInput');
+        if (input) {
+            input.addEventListener('keydown', function (ev) {
+                // Enter 发送；Shift+Enter 换行
+                if (ev.key !== 'Enter') return;
+                if (ev.shiftKey) return;
+                // 中文输入法合成态：按回车选词时不发送
+                if (ev.isComposing || ev.keyCode === 229) return;
+
+                ev.preventDefault();
+                sendMessage();
+            });
+        }
+
         await loadPeers();
+
+        // 即使 WS connect 事件已在别的页面发生，这里也要兜底检查未读数
+        try {
+            const r = await api('/api/v1/dm/unread_count');
+            const d = r && r.data;
+            const cnt = Number((d && d.count) || 0) || 0;
+            if (cnt > 0) {
+                // 状态提示 + 先刷新会话列表
+                setText('dmStatus', '未读 ' + cnt);
+                await loadPeers();
+            }
+        } catch {
+            // ignore
+        }
 
         // 初始选择
         const initPeer = String(getInitialPeerId() || '');
@@ -255,5 +381,10 @@
             const name = String(p.user_name || p.userName || uid);
             selectPeer(uid, name);
         }
+
+        // 最后清一次未读（以 Redis 计数为准）
+        api('/api/v1/dm/unread_clear', { method: 'POST' }).then(function () {
+            try { localStorage.removeItem('gb_dm_hint'); } catch { /* ignore */ }
+        }).catch(function () { });
     });
 })();

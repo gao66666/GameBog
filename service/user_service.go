@@ -48,6 +48,11 @@ func (se *UserService) Login(param models.ParamLogin) (*models.User, string, err
 		return nil, "", ErrTokenGenerate
 	}
 
+	// 登录（上线）时预热一次用户基础信息缓存（2小时 TTL）。
+	if se.redisRepo != nil {
+		_ = se.redisRepo.SetUserBase(user)
+	}
+
 	return user, tokenString, nil
 }
 
@@ -81,9 +86,41 @@ func (se *UserService) SignUp(param models.ParamSignUp) (uint64, error) {
 }
 
 func (se *UserService) UpdateUser(userID uint64, data map[string]interface{}) error {
-	return se.userRepo.UpdateUser(userID, data)
+	// 先删除Redis缓存
+	if se.redisRepo != nil {
+		_ = se.redisRepo.DelUserBase(userID)
+	}
+	
+	// 再更新数据库
+	err := se.userRepo.UpdateUser(userID, data)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (se *UserService) GetUserByID(userID uint64) (*models.User, error) {
 	return se.userRepo.GetUserByID(userID)
+}
+
+// GetUserBaseCached 用于个人中心：优先读 Redis，miss 再读 DB 并回填缓存。
+func (se *UserService) GetUserBaseCached(userID uint64) (*models.User, error) {
+	if userID == 0 {
+		return nil, ErrUserNotFound
+	}
+	if se.redisRepo != nil {
+		   if cu, ok, err := se.redisRepo.GetUserBase(userID); err == nil && ok && cu != nil {
+			   return &models.User{ID: userID, Name: cu.UserName, Email: cu.Email, Avatar: cu.Avatar, Github: cu.Github}, nil
+		   }
+	}
+
+	u, err := se.userRepo.GetUserByID(userID)
+	if err != nil {
+		return nil, err
+	}
+	if se.redisRepo != nil {
+		_ = se.redisRepo.SetUserBase(u)
+	}
+	return u, nil
 }

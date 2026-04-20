@@ -26,6 +26,7 @@ type App struct {
 	NotificationStoreHandler *handler.NotificationStoreHandler
 	SearchHandler            *handler.SearchHandler
 	DMHandler                *handler.DMHandler
+	TopicHandler             *handler.TopicHandler
 }
 
 func (a *App) StartWorkers() {
@@ -54,6 +55,7 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	followRedis := database.NewRedisFollowRepository(rdb)
 	dmRepo := database.NewDMRepository(db)
 	dmRedis := database.NewRedisDMRepository(rdb)
+	topicRepo := database.NewTopicRepository(db)
 
 	if err := userRepo.InitTable(); err != nil {
 		zap.L().Warn("用户表初始化失败", zap.Error(err))
@@ -73,18 +75,24 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	if err := dmRepo.InitTable(); err != nil {
 		zap.L().Warn("私信表初始化失败", zap.Error(err))
 	}
+	if err := topicRepo.InitTable(); err != nil {
+		zap.L().Warn("话题表初始化失败", zap.Error(err))
+	}
 
 	// 2. Service 层
 	userSvc := service.NewUserService(userRepo, userRedis)
-	articleSvc := service.NewArticleService(articleRepo, userRepo, commentRepo, articleRedis)
-	commentSvc := service.NewCommentService(commentRepo, articleRepo, userRepo, commentRedis)
+	articleSvc := service.NewArticleService(articleRepo, userRepo, commentRepo, followRepo, articleRedis, topicRepo)
 	followSvc := service.NewFollowService(followRepo, userRepo, followRedis)
 	dmSvc := service.NewDMService(dmRepo, userRepo, dmRedis)
+	topicSvc := service.NewTopicService(topicRepo, articleRepo)
 
 	// 3. Handler 层
 	notificationHandler := handler.NewNotificationHandler(notificationRepo, notificationRedis)
 	notificationStoreHandler := handler.NewNotificationStoreHandler(notificationRepo)
 	dmHandler := handler.NewDMHandler(dmSvc, notificationHandler)
+
+	commentSvc := service.NewCommentService(commentRepo, articleRepo, userRepo, commentRedis, notificationRepo, notificationRedis, notificationHandler)
+	topicHandler := handler.NewTopicHandler(topicSvc)
 	return &App{
 		UserHandler:              handler.NewUserHandler(userSvc),
 		ArticleHandler:           handler.NewArticleHandler(articleSvc),
@@ -94,6 +102,7 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 		NotificationStoreHandler: notificationStoreHandler,
 		SearchHandler:            handler.NewSearchHandler(articleRepo, userRepo, commentRepo),
 		DMHandler:                dmHandler,
+		TopicHandler:             topicHandler,
 	}
 }
 
@@ -139,6 +148,9 @@ func RouterInit(mode string, app *App) *gin.Engine {
 	r.GET("/dm", handler.DMPage)
 	r.GET("/article/:id", handler.ArticlePage)
 	r.GET("/editor", handler.EditorPage)
+	r.GET("/topics", handler.TopicsPage)
+	r.GET("/topic/:id/discuss", handler.TopicDiscussPage)
+	r.GET("/topic/:id", handler.TopicPage)
 
 	r.GET("/healthz", handler.Healthz)
 	r.GET("/readyz", handler.Readyz)
@@ -174,23 +186,37 @@ func registerPublicRoutes(g *gin.RouterGroup, app *App) {
 	g.GET("/articles/comments/floor/:root_id", app.CommentHandler.GetCommentDetail)
 	g.GET("/search", app.SearchHandler.GlobalSearch)
 	g.GET("/ws", app.NotificationHandler.HandleWS)
+
+	g.GET("/topics", app.TopicHandler.GetTopicsPublic)
+	g.GET("/topics/:id", app.TopicHandler.GetTopicPublic)
+	g.GET("/topics/:id/articles", app.TopicHandler.GetTopicArticlesPublic)
+	g.GET("/topics/:id/discussions", app.TopicHandler.GetTopicDiscussionsPublic)
 }
 
 func registerProtectedRoutes(g *gin.RouterGroup, app *App) {
 	authGroup := g.Group("")
 	authGroup.Use(middleware.JWTAuthMiddleware())
 	{
+		authGroup.GET("/users/me", app.UserHandler.GetMe)
 		authGroup.POST("/users/update", app.UserHandler.UpdateUserHandle)
 		authGroup.POST("/follow", app.FollowHandler.CreateFollowAuth)
 		authGroup.GET("/dm/peers", app.DMHandler.ListPeers)
 		authGroup.GET("/dm/messages", app.DMHandler.ListMessages)
 		authGroup.POST("/dm/messages", app.DMHandler.SendMessage)
+		authGroup.GET("/dm/unread_count", app.DMHandler.GetUnreadCount)
+		authGroup.POST("/dm/unread_clear", app.DMHandler.ClearUnread)
+		authGroup.POST("/dm/conversation/delete", app.DMHandler.DeleteConversation)
 		authGroup.POST("/articles", app.ArticleHandler.CreateArticleHandle)
 		authGroup.PUT("/articles/:id", app.ArticleHandler.UpdateArticleHandle)
 		authGroup.GET("/articles", app.ArticleHandler.GetArticleListHandler)
+		authGroup.GET("/articles/following_latest", app.ArticleHandler.GetFollowingLatestArticles)
 		authGroup.POST("/articles/like", app.ArticleHandler.LikeArticleHandle)
 		authGroup.DELETE("/articles/:id", app.ArticleHandler.DeleteArticleHandle)
 		authGroup.POST("/articles/comments", app.CommentHandler.CreateComment)
 		authGroup.DELETE("/articles/comments/:id", app.CommentHandler.DeleteComment)
+
+		authGroup.POST("/topics", app.TopicHandler.CreateTopicAuth)
+		authGroup.POST("/topics/:id/discussions", app.TopicHandler.CreateTopicDiscussionAuth)
+		authGroup.DELETE("/topics/:id", app.TopicHandler.DeleteTemporaryTopic)
 	}
 }

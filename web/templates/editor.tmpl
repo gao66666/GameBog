@@ -14,6 +14,7 @@
       <div class="brand"><a href="/">GoBlog</a></div>
       <nav class="nav">
         <a href="/" id="navHome">首页</a>
+        <a href="/topics" id="navTopics">话题</a>
         <a href="/me" id="navMe">个人中心</a>
         <a href="/login" id="navLogin">登录</a>
       </nav>
@@ -46,8 +47,19 @@
         </label>
 
         <label>
+          <div class="label">话题（只能下拉选择）</div>
+          <select id="editorTopicSelect"></select>
+          <div class="muted" style="margin-top:6px">临时话题 48 小时后会自动清理其文章与讨论区。</div>
+        </label>
+
+        <label>
           <div class="label">标签（空格分割，最多 5 个）</div>
           <input type="text" id="editorTagsInput" maxlength="200" placeholder="例如：Go 后端 缓存 并发" />
+        </label>
+
+        <label>
+          <div class="label">摘要（必填）</div>
+          <textarea id="editorSummaryInput" maxlength="500" placeholder="请输入摘要（用于列表/搜索展示）" style="min-height:88px"></textarea>
         </label>
 
         <div class="editor-frame">

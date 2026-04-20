@@ -5,13 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GoBlog - 博客</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/vendor/hljs-github-dark-dimmed.min.css" />
 </head>
-<body>
+<body class="page-article">
   <header class="topbar">
     <div class="container row">
       <div class="brand"><a href="/">GoBlog</a></div>
       <nav class="nav">
         <a href="/" id="navHome">首页</a>
+        <a href="/topics" id="navTopics">话题</a>
         <a href="/me" id="navMe">个人中心</a>
         <a href="/login" id="navLogin">登录</a>
       </nav>
@@ -19,42 +21,64 @@
   </header>
 
   <main class="container" data-article-id="{{ .ArticleID }}" id="page">
-    <section class="card">
-      <h1 id="articleTitle">加载中...</h1>
-      <div class="muted" id="articleMeta"></div>
+    <div class="article-shell">
+      <aside class="card article-toc" id="articleTocCard" style="display:none">
+        <div class="label">目录</div>
+        <nav id="articleToc" class="article-toc-list"></nav>
+      </aside>
 
-      <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap;margin-top:8px">
-        <div class="muted" id="authorInfo">作者：-</div>
-        <button type="button" id="followBtn" style="display:none">关注</button>
-        <div class="muted" id="followMsg"></div>
+      <div class="article-main">
+        <section class="card">
+          <h1 id="articleTitle">加载中...</h1>
+          <div class="muted" id="articleMeta"></div>
+          <div class="row article-tags" id="articleTags" style="justify-content:flex-start;gap:6px;flex-wrap:wrap;margin-top:8px;display:none"></div>
+
+          <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap;margin-top:8px">
+            <div class="muted" id="authorInfo">作者：-</div>
+            <button type="button" id="followBtn" style="display:none">关注</button>
+            <div class="muted" id="followMsg"></div>
+          </div>
+          <hr />
+          <div class="content" id="articleContent"></div>
+          <div class="row" style="justify-content:flex-start;gap:8px;margin-top:12px">
+            <button type="button" id="likeBtn" class="like-btn" aria-label="点赞">
+              <span class="like-icon" aria-hidden="true">👍</span>
+            </button>
+            <div class="muted" id="likeMsg"></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>评论区</h2>
+
+          <form id="commentForm" class="form">
+            <label>
+              <div class="label">发表评论</div>
+              <textarea name="content" rows="4" maxlength="500" placeholder="写点什么..." required></textarea>
+            </label>
+            <button type="submit">发表</button>
+            <div class="muted" id="commentMsg" style="margin-top:8px"></div>
+          </form>
+
+          <div style="height:16px"></div>
+          <div id="comments"></div>
+        </section>
       </div>
-      <hr />
-      <div class="content" id="articleContent"></div>
-      <div class="row" style="justify-content:flex-start;gap:8px;margin-top:12px">
-        <button type="button" id="likeBtn" class="like-btn" aria-label="点赞">
-          <span class="like-icon" aria-hidden="true">👍</span>
-        </button>
-        <div class="muted" id="likeMsg"></div>
-      </div>
-    </section>
 
-    <section class="card">
-      <h2>评论区</h2>
-
-      <form id="commentForm" class="form">
-        <label>
-          <div class="label">发表评论</div>
-          <textarea name="content" rows="4" maxlength="500" placeholder="写点什么..." required></textarea>
-        </label>
-        <button type="submit">发表</button>
-        <div class="muted" id="commentMsg" style="margin-top:8px"></div>
-      </form>
-
-      <div style="height:16px"></div>
-      <div id="comments"></div>
-    </section>
+        <!-- 新增：右侧作者信息和图标栏 -->
+        <aside class="card article-side-info">
+          <div class="author-side-name" id="sideAuthorName">作者</div>
+          <div class="author-side-icons">
+            <a href="#" id="sideHomeLink" title="作者主页"><img src="/static/icons/home.svg" alt="主页" class="side-icon"></a>
+            <a href="#" id="sideGithubLink" title="GitHub" target="_blank"><img src="/static/icons/github.svg" alt="GitHub" class="side-icon"></a>
+            <a href="#" id="sideMailLink" title="私信"><img src="/static/icons/mail.svg" alt="私信" class="side-icon"></a>
+          </div>
+        </aside>
+    </div>
   </main>
 
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/highlight.min.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/article.js"></script>
 </body>

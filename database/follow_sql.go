@@ -50,3 +50,20 @@ func (r *FollowRepository) CreateFollow(param *models.ParamFollow) error {
 
 	return nil
 }
+
+// GetFollowingIDs 查询我关注的用户ID列表。
+func (r *FollowRepository) GetFollowingIDs(followerID uint64, limit int) ([]uint64, error) {
+	if followerID == 0 {
+		return []uint64{}, nil
+	}
+	if limit <= 0 {
+		limit = 5000
+	}
+	ids := make([]uint64, 0)
+	err := r.db.Model(&models.Follow{}).
+		Where("follower_id = ?", followerID).
+		Order("created_at DESC").
+		Limit(limit).
+		Pluck("following_id", &ids).Error
+	return ids, err
+}

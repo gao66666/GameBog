@@ -1,7 +1,11 @@
 package bootstrap
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
+	"time"
 
 	"github.com/gao66666/GoBlog/database"
 	"github.com/gao66666/GoBlog/logger"
@@ -16,9 +20,10 @@ import (
 )
 
 type Runtime struct {
-	Engine *gin.Engine
-	cfg    *setting.AppConfig
-	db     *gorm.DB
+	Engine      *gin.Engine
+	cfg         *setting.AppConfig
+	db          *gorm.DB
+	pprofServer *http.Server
 }
 
 func Init(configPath string) (*Runtime, error) {
@@ -60,13 +65,35 @@ func Init(configPath string) (*Runtime, error) {
 	}
 
 	engine := router.RouterInit(setting.Conf.Mode, app)
-	// 关闭开发环境的自动种子数据，避免默认生成用户和文章
-	// 如需再次启用，可手动调用 seedDevData(dbClient)
-	return &Runtime{
+
+	rt := &Runtime{
 		Engine: engine,
 		cfg:    setting.Conf,
 		db:     dbClient,
-	}, nil
+	}
+
+	// pprof（仅在显式启用时启动；建议线上只绑定 localhost）
+	if setting.Conf.ObservabilityConfig != nil && setting.Conf.ObservabilityConfig.EnablePprof {
+		srv := &http.Server{
+			Addr:              setting.Conf.ObservabilityConfig.PprofAddr,
+			Handler:           http.DefaultServeMux,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      2 * time.Minute,
+			IdleTimeout:       60 * time.Second,
+		}
+		rt.pprofServer = srv
+		go func() {
+			zap.L().Info("pprof enabled", zap.String("addr", srv.Addr))
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				zap.L().Error("pprof server stopped", zap.Error(err))
+			}
+		}()
+	}
+
+	// 关闭开发环境的自动种子数据，避免默认生成用户和文章
+	// 如需再次启用，可手动调用 seedDevData(dbClient)
+	return rt, nil
 }
 
 func (r *Runtime) Addr() string {
@@ -76,6 +103,13 @@ func (r *Runtime) Addr() string {
 func (r *Runtime) Cleanup() {
 	mq.CloseKafka()
 	mq.CloseNsq()
+
+	if r.pprofServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = r.pprofServer.Shutdown(ctx)
+		cancel()
+	}
+
 	if r.db != nil {
 		sqlDB, err := r.db.DB()
 		if err == nil {

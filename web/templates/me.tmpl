@@ -16,6 +16,7 @@
       </form>
       <nav class="nav">
         <a href="/" id="navHome">首页</a>
+        <a href="/topics" id="navTopics">话题</a>
         <a href="/me" id="navMe">个人中心</a>
         <a href="/login" id="navLogin">登录</a>
       </nav>
@@ -45,11 +46,50 @@
       <div class="kv">
         <div class="k">用户ID</div><div class="v" id="meUserId">-</div>
         <div class="k">用户名</div><div class="v" id="meUserName">-</div>
+        <div class="k">邮箱</div><div class="v" id="meUserEmail">-</div>
         <div class="k">通知连接</div><div class="v" id="wsStatus">未连接</div>
       </div>
       <p class="muted">通知通过 WebSocket 实时推送（含离线未读同步）。</p>
       <div style="margin-top:10px">
-        <button id="navLogout" type="button">退出登录</button>
+        <div class="me-action-row">
+          <button type="button" id="dmBtn" class="icon-btn" title="消息" onclick="location.href='/dm'">
+            <img src="/static/icons/mail.svg" alt="消息" class="icon-btn-img">
+            <span id="dmDot" class="badge" style="display:none"></span>
+          </button>
+          <button type="button" id="meSettingsBtn" class="icon-btn" title="设置">
+            <img src="/static/icons/settings.svg" alt="设置" class="icon-btn-img">
+          </button>
+          <button id="navLogout" type="button" class="icon-btn" title="退出登录">
+            <img src="/static/icons/logout.svg" alt="退出登录" class="icon-btn-img">
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="meSettingsPanel" style="display:none">
+      <h2>设置</h2>
+      <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap">
+        <div style="flex:1 1 260px;min-width:240px">
+          <div class="muted" style="margin-bottom:6px">用户名</div>
+          <input id="meSetName" type="text" placeholder="新的用户名（可选）" style="width:100%" />
+        </div>
+        <div style="flex:1 1 260px;min-width:240px">
+          <div class="muted" style="margin-bottom:6px">邮箱</div>
+          <input id="meSetEmail" type="email" placeholder="新的邮箱（可选）" style="width:100%" />
+        </div>
+        <div style="flex:1 1 260px;min-width:240px">
+          <div class="muted" style="margin-bottom:6px">新密码</div>
+          <input id="meSetPassword" type="password" placeholder="新的密码（可选）" style="width:100%" />
+        </div>
+        <div style="flex:1 1 260px;min-width:240px">
+          <div class="muted" style="margin-bottom:6px">GitHub 链接</div>
+          <input id="meSetGithub" type="url" placeholder="https://github.com/yourname" style="width:100%" />
+        </div>
+      </div>
+      <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap;margin-top:10px">
+        <button type="button" id="meSettingsSaveBtn">保存</button>
+        <button type="button" id="meSettingsCancelBtn">取消</button>
+        <div class="muted" id="meSettingsMsg"></div>
       </div>
     </section>
 

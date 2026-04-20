@@ -2,6 +2,7 @@ package handler
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/tool"
@@ -22,6 +23,29 @@ func (h *UserHandler) LoginHandle(c *gin.Context) {
 		return
 	}
 	tool.ResponseSuccess(c, gin.H{"user_id": strconv.FormatUint(user.ID, 10), "user_name": user.Name, "token": token}, "登录成功")
+}
+
+// GetMe 个人中心读取用户基础信息：优先 Redis，miss 再回源 DB 并回填缓存。
+func (h *UserHandler) GetMe(c *gin.Context) {
+	userID := c.GetUint64("userID")
+	if userID == 0 {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	u, err := h.se.GetUserBaseCached(userID)
+	if err != nil || u == nil {
+		tool.ResponseErrorWithMsg(c, "用户不存在")
+		return
+	}
+
+	tool.ResponseSuccess(c, gin.H{
+		"user_id":   strconv.FormatUint(u.ID, 10),
+		"user_name": u.Name,
+		"email":     u.Email,
+		"avatar":    u.Avatar,
+		"github":    u.Github,
+	}, "ok")
 }
 
 func (hd *UserHandler) SignUpHandle(c *gin.Context) {
@@ -46,8 +70,11 @@ func (hd *UserHandler) SignUpHandle(c *gin.Context) {
 
 func (hd *UserHandler) UpdateUserHandle(c *gin.Context) {
 	// 1. 获取当前登录用户 ID (从 JWT 中间件解析出来的)
-	uid, _ := c.Get("userID")
-	userID := uid.(uint64)
+	userID := c.GetUint64("userID")
+	if userID == 0 {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
 
 	// 2. 绑定参数
 	var p models.UpdateUserParam
@@ -77,6 +104,19 @@ func (hd *UserHandler) UpdateUserHandle(c *gin.Context) {
 	}
 	if p.Email != nil {
 		updateMap["email"] = *p.Email
+	}
+	if p.Avatar != nil {
+		updateMap["avatar"] = *p.Avatar
+	}
+	github := p.Github
+	if github == nil {
+		github = p.GithubURL
+	}
+	if github == nil {
+		github = p.GithubUrl
+	}
+	if github != nil {
+		updateMap["github"] = strings.TrimSpace(*github)
 	}
 
 	// 如果用户什么都没传，直接返回成功
@@ -110,9 +150,10 @@ func (h *UserHandler) GetUserPublic(c *gin.Context) {
 	}
 
 	tool.ResponseSuccess(c, gin.H{
-		"user_id":         strconv.FormatUint(u.ID, 10),
-		"user_name":       u.Name,
-		"avatar":          u.Avatar,
-		"follower_count":  u.FollowingCount,
+		"user_id":        strconv.FormatUint(u.ID, 10),
+		"user_name":      u.Name,
+		"avatar":         u.Avatar,
+		"github":         u.Github,
+		"follower_count": u.FollowingCount,
 	}, "查询成功")
 }

@@ -2,6 +2,7 @@ package database
 
 import (
 	"strings"
+	"time"
 
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/tool"
@@ -189,6 +190,35 @@ func (r *ArticleRepository) GetArticleList(authorID uint64, page int, size int) 
 
 	return articles, total, err
 }
+
+// GetArticlesByTopic 按话题（category_id）获取文章列表，按创建时间倒序。
+func (r *ArticleRepository) GetArticlesByTopic(topicID uint, page int, size int) ([]*models.Article, int64, error) {
+	var articles []*models.Article
+	var total int64
+	if topicID == 0 {
+		return []*models.Article{}, 0, nil
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 30
+	}
+
+	query := r.db.Model(&models.Article{}).Where("category_id = ?", topicID)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	err := query.Preload("Tags").
+		Order("created_at DESC").
+		Offset((page - 1) * size).
+		Limit(size).
+		Find(&articles).Error
+
+	return articles, total, err
+}
+
 func (r *ArticleRepository) DeleteArticle(articleID uint64, userID uint64) error {
 	// 只有文章 ID 匹配 且 作者 ID 也匹配，才会真正执行删除
 	// 这就是最简单且安全的权限校验
@@ -210,10 +240,11 @@ func (r *ArticleRepository) UpdateArticle(article *models.Article) error {
 	return r.db.Model(&models.Article{}).
 		Where("id = ? AND author_id = ?", article.ID, article.AuthorID).
 		Updates(map[string]interface{}{
-			"title":      article.Title,
-			"summary":    article.Summary,
-			"content":    article.Content,
-			"updated_at": article.UpdatedAt,
+			"title":       article.Title,
+			"summary":     article.Summary,
+			"content":     article.Content,
+			"category_id": article.CategoryID,
+			"updated_at":  article.UpdatedAt,
 		}).Error
 }
 
@@ -226,10 +257,11 @@ func (r *ArticleRepository) UpdateArticleWithTags(article *models.Article) error
 		res := tx.Model(&models.Article{}).
 			Where("id = ? AND author_id = ?", article.ID, article.AuthorID).
 			Updates(map[string]interface{}{
-				"title":      article.Title,
-				"summary":    article.Summary,
-				"content":    article.Content,
-				"updated_at": article.UpdatedAt,
+				"title":       article.Title,
+				"summary":     article.Summary,
+				"content":     article.Content,
+				"category_id": article.CategoryID,
+				"updated_at":  article.UpdatedAt,
 			})
 		if res.Error != nil {
 			return res.Error
@@ -301,4 +333,42 @@ func (r *ArticleRepository) SearchArticlesFallback(keyword string, limit int) ([
 		Limit(limit).
 		Find(&articles).Error
 	return articles, err
+}
+
+// GetArticlesByAuthorsSinceOrderByView 关注流查询：
+// - 作者在 authorIDs 内
+// - created_at >= since
+// - 按 view_count 倒序（同 view 时按 created_at 倒序）
+func (r *ArticleRepository) GetArticlesByAuthorsSinceOrderByView(authorIDs []uint64, since time.Time, page int, size int) ([]*models.Article, int64, error) {
+	if len(authorIDs) == 0 {
+		return []*models.Article{}, 0, nil
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 10
+	}
+
+	var (
+		articles []*models.Article
+		total    int64
+	)
+
+	query := r.db.Model(&models.Article{}).
+		Where("author_id IN ?", authorIDs).
+		Where("created_at >= ?", since)
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	err := query.Preload("Tags").
+		Order("view_count DESC").
+		Order("created_at DESC").
+		Offset((page - 1) * size).
+		Limit(size).
+		Find(&articles).Error
+
+	return articles, total, err
 }

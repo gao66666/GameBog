@@ -53,3 +53,5 @@ security:
 
 observability:
   enable_metrics: true
+  enable_pprof: false
+  pprof_addr: "127.0.0.1:6060"

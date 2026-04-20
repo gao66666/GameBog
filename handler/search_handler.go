@@ -26,11 +26,18 @@ func NewSearchHandler(articleRepo *database.ArticleRepository, userRepo *databas
 
 type searchArticleResult struct {
 	ID           uint64 `json:"id,string"`
+	AuthorID     uint64 `json:"author_id,string"`
+	AuthorName   string `json:"author_name"`
 	Title        string `json:"title"`
 	Summary      string `json:"summary"`
 	ViewCount    uint64 `json:"viewCount"`
 	LikeCount    uint64 `json:"likeCount"`
 	CommentCount int64  `json:"commentCount"`
+}
+
+type searchUserResult struct {
+	ID   uint64 `json:"id,string"`
+	Name string `json:"name"`
 }
 
 func (h *SearchHandler) ProcessSearchSyncMessage(ctx context.Context, payload []byte) error {
@@ -57,6 +64,7 @@ func (h *SearchHandler) GlobalSearch(c *gin.Context) {
 	// 先查用户（总是用 MySQL），再查文章（ES 优先 -> MySQL 兜底）。
 	var (
 		userResults    []*models.User
+		usersOut       []searchUserResult
 		articleResults any
 	)
 
@@ -68,15 +76,26 @@ func (h *SearchHandler) GlobalSearch(c *gin.Context) {
 		}
 	}
 
+	// 用户 ID 必须以 string 下发，避免 JS 精度丢失（snowflake/uint64）。
+	if len(userResults) > 0 {
+		usersOut = make([]searchUserResult, 0, len(userResults))
+		for _, u := range userResults {
+			if u == nil || u.ID == 0 {
+				continue
+			}
+			usersOut = append(usersOut, searchUserResult{ID: u.ID, Name: u.Name})
+		}
+	}
+
 	if !search.Enabled() {
 		if h.articleRepo == nil {
-			tool.ResponseSuccess(c, gin.H{"articles": []any{}, "users": userResults}, "ok")
+			tool.ResponseSuccess(c, gin.H{"articles": []any{}, "users": usersOut}, "ok")
 			return
 		}
 		articles, err := h.articleRepo.SearchArticlesFallback(query, 20)
 		if err != nil {
 			zap.L().Error("MySQL 搜索降级查询失败", zap.Error(err))
-			tool.ResponseSuccess(c, gin.H{"articles": []any{}, "users": userResults}, "ok")
+			tool.ResponseSuccess(c, gin.H{"articles": []any{}, "users": usersOut}, "ok")
 			return
 		}
 		articleResults = articles
@@ -116,6 +135,7 @@ func (h *SearchHandler) GlobalSearch(c *gin.Context) {
 			}
 			articlesOut = append(articlesOut, searchArticleResult{
 				ID:        a.ID,
+				AuthorID:  a.AuthorID,
 				Title:     a.Title,
 				Summary:   a.Summary,
 				ViewCount: a.ViewCount,
@@ -170,6 +190,9 @@ func (h *SearchHandler) GlobalSearch(c *gin.Context) {
 					if cur.Summary == "" {
 						cur.Summary = a.Summary
 					}
+					if cur.AuthorID == 0 {
+						cur.AuthorID = a.AuthorID
+					}
 					cur.ViewCount = a.ViewCount
 					cur.LikeCount = a.LikeCount
 					base[a.ID] = cur
@@ -183,6 +206,36 @@ func (h *SearchHandler) GlobalSearch(c *gin.Context) {
 		}
 	default:
 		// 未知格式：不强行处理
+	}
+
+	// 批量补齐作者名称（最多 20 条，N 次查询可接受；避免接口层暴露用户表结构）
+	if h.userRepo != nil && len(articlesOut) > 0 {
+		nameMap := make(map[uint64]string, 16)
+		for i := range articlesOut {
+			uid := articlesOut[i].AuthorID
+			if uid == 0 {
+				continue
+			}
+			if _, ok := nameMap[uid]; ok {
+				continue
+			}
+			if u, err := h.userRepo.GetUserByID(uid); err == nil && u != nil {
+				if u.Name != "" {
+					nameMap[uid] = u.Name
+				} else {
+					nameMap[uid] = fmt.Sprintf("UID:%d", uid)
+				}
+			}
+		}
+		for i := range articlesOut {
+			uid := articlesOut[i].AuthorID
+			if uid == 0 {
+				continue
+			}
+			if n, ok := nameMap[uid]; ok {
+				articlesOut[i].AuthorName = n
+			}
+		}
 	}
 
 	// 批量补齐评论数
@@ -200,7 +253,7 @@ func (h *SearchHandler) GlobalSearch(c *gin.Context) {
 
 	tool.ResponseSuccess(c, gin.H{
 		"articles": articlesOut,
-		"users":    userResults,
+		"users":    usersOut,
 	}, "ok")
 }
 

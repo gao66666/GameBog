@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GoBlog - 话题</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container row">
+      <div class="brand"><a href="/">GoBlog</a></div>
+      <nav class="nav">
+        <a href="/" id="navHome">首页</a>
+        <a href="/topics" id="navTopics">话题</a>
+        <a href="/me" id="navMe">个人中心</a>
+        <a href="/login" id="navLogin">登录</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container" id="topicsPage">
+    <div class="row" style="align-items:stretch;justify-content:flex-start;gap:20px;flex-wrap:wrap">
+      <section class="card" style="flex:1 1 520px;min-width:360px">
+        <h2 style="margin-top:0">可用话题</h2>
+        <div class="muted" id="topicListMsg"></div>
+        <div id="topicList" class="list topic-list-fixed" style="margin-top:12px"></div>
+        <div class="row" id="topicPager" style="gap:10px;justify-content:flex-start;margin-top:16px"></div>
+      </section>
+
+      <section class="card" style="flex:0 0 360px;max-width:420px;min-width:280px">
+        <h2 style="margin-top:0">创建话题</h2>
+        <div class="muted">长期话题申请创建需要管理员进行同意。<br/>临时话题在 48 小时后自动被清理。</div>
+
+        <div style="height:12px"></div>
+        <form id="topicCreateForm" class="form">
+          <label>
+            <div class="label">创建话题（自由输入）</div>
+            <input type="text" id="topicNameInput" maxlength="50" placeholder="例如：Go 并发 / 缓存 / 架构" />
+          </label>
+
+          <div class="row" style="justify-content:flex-start;gap:12px;flex-wrap:wrap">
+            <label class="row" style="justify-content:flex-start;gap:6px">
+              <input type="radio" name="topicKind" value="long" checked />
+              <span>长期</span>
+            </label>
+            <label class="row" style="justify-content:flex-start;gap:6px">
+              <input type="radio" name="topicKind" value="temporary" />
+              <span>临时（48h）</span>
+            </label>
+          </div>
+
+          <button type="submit">创建</button>
+          <div class="muted" id="topicCreateMsg"></div>
+        </form>
+      </section>
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/topics.js"></script>
+</body>
+</html>

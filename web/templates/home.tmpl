@@ -16,6 +16,7 @@
       </form>
       <nav class="nav">
         <a href="/" id="navHome">首页</a>
+        <a href="/topics" id="navTopics">话题</a>
         <a href="/me" id="navMe">个人中心</a>
         <a href="/login" id="navLogin">登录</a>
       </nav>
@@ -47,9 +48,22 @@
     </section>
 
     <section class="card">
-      <h2>最新博客</h2>
+      <div class="row" style="justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <h2 style="margin:0">最新博客</h2>
+        <div class="latest-toggle" id="latestToggle" style="display:none">
+          <button type="button" class="toggle-btn toggle-active" id="latestAllBtn">全部</button>
+          <button type="button" class="toggle-btn" id="latestFollowBtn">仅关注</button>
+        </div>
+      </div>
+
       <div id="latest" class="list"></div>
       <div class="muted" id="latestEmpty" style="display:none">暂无文章</div>
+
+      <div class="row" id="latestPager" style="justify-content:flex-start;gap:10px;display:none">
+        <button type="button" id="latestPrev">上一页</button>
+        <button type="button" id="latestNext">下一页</button>
+        <div class="muted" id="latestPageInfo"></div>
+      </div>
     </section>
   </main>
 

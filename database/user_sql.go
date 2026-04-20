@@ -2,19 +2,18 @@ package database
 
 import (
 	"fmt"
-
 	"strings"
 
 	"github.com/gao66666/GoBlog/models"
 	"gorm.io/gorm"
 )
 
-// 用户Repository
+// 用户 Repository
 type UserRepository struct {
 	db *gorm.DB
 }
 
-// 创建UserRepository实例
+// 创建 UserRepository 实例
 func NewUserRepository(db *gorm.DB) *UserRepository {
 	return &UserRepository{db: db}
 }
@@ -30,13 +29,10 @@ func (r *UserRepository) InitTable() error {
 }
 
 // 创建用户
-// 创建用户
 func (r *UserRepository) CreateUser(user *models.User) error {
-
-	//存储到数据库
 	result := r.db.Create(user)
 	if result.Error != nil {
-		// 如果是唯一约束错误
+		// 唯一约束冲突
 		if isDuplicateKeyError(result.Error) {
 			return ErrUserExists
 		}
@@ -48,7 +44,7 @@ func (r *UserRepository) CreateUser(user *models.User) error {
 
 // 检查是否为唯一约束错误
 func isDuplicateKeyError(err error) bool {
-	// MySQL 重复键错误
+	// MySQL duplicate key
 	return strings.Contains(err.Error(), "Duplicate entry") ||
 		strings.Contains(err.Error(), "1062")
 }
@@ -73,8 +69,20 @@ func (r *UserRepository) GetUserByTel(tel string) (*models.User, error) {
 }
 
 func (r *UserRepository) UpdateUser(userID uint64, data map[string]interface{}) error {
-	// 只有传入的 map 中存在的 key，SQL 才会更新对应的列
-	return r.db.Model(&models.User{}).Where("id = ?", userID).Updates(data).Error
+	tx := r.db.Model(&models.User{}).Where("id = ?", userID).Updates(data)
+	if tx.Error != nil {
+		return tx.Error
+	}
+
+	// 0 行更新不一定是失败（值没变化也会是 0），这里补一层存在性校验。
+	var cnt int64
+	if err := r.db.Model(&models.User{}).Where("id = ?", userID).Count(&cnt).Error; err != nil {
+		return err
+	}
+	if cnt == 0 {
+		return ErrUserGet
+	}
+	return nil
 }
 
 func (r *UserRepository) IncrementFollowingCount(userID uint64) error {
@@ -89,7 +97,7 @@ func (r *UserRepository) IncrementFollowerCount(userID uint64) error {
 		Update("follower_count", gorm.Expr("follower_count + 1")).Error
 }
 
-// SearchUsersByNameOrTel 用于简单搜索用户，按名称/手机号模糊匹配，粗略代表“相关性”。
+// SearchUsersByNameOrTel 简单按 name/tel 模糊搜索
 func (r *UserRepository) SearchUsersByNameOrTel(keyword string, limit int) ([]*models.User, error) {
 	if limit <= 0 {
 		limit = 20

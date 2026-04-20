@@ -2,6 +2,11 @@
     min-height: 100vh;
 }
 
+/* 编辑页：横向更宽一些 */
+.page-editor .container {
+    max-width: 1280px;
+}
+
 .editor-card {
     margin-top: 24px;
 }
@@ -45,20 +50,27 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 12px;
+    /* 约束高度，避免预览一直向下延长；右侧用滚动条展示 */
+    min-height: 520px;
+    height: 70vh;
+    max-height: 780px;
 }
 
 .editor-subpane {
     display: flex;
     flex-direction: column;
+    min-height: 0;
 }
 
 #editorContentInput {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    min-height: 420px;
+    height: 100%;
+    min-height: 0;
 }
 
 .editor-preview {
-    min-height: 420px;
+    height: 100%;
+    min-height: 0;
     padding: 10px;
     border-radius: 8px;
     border: 1px solid var(--border);
@@ -69,6 +81,14 @@
 @media (max-width: 800px) {
     .editor-frame-body {
         grid-template-columns: minmax(0, 1fr);
+        height: auto;
+        max-height: none;
+    }
+
+    #editorContentInput,
+    .editor-preview {
+        min-height: 420px;
+        height: auto;
     }
 }
 
