@@ -48,7 +48,7 @@ func NewTopicRepository(db *gorm.DB) *TopicRepository {
 }
 
 func (r *TopicRepository) InitTable() error {
-	if err := r.db.AutoMigrate(&models.Topic{}, &models.TopicDiscussion{}); err != nil {
+	if err := r.db.AutoMigrate(&models.Topic{}, &models.TopicDiscussion{}, &models.GameTopicMap{}); err != nil {
 		return ErrInitTopic
 	}
 	if _, err := r.EnsureDefaultTopic(); err != nil {
@@ -56,6 +56,53 @@ func (r *TopicRepository) InitTable() error {
 	}
 	zap.L().Info("话题数据库初始化成功")
 	return nil
+}
+
+func (r *TopicRepository) EnsureGameTopic(gameID uint64, gameName string) (uint, error) {
+	if gameID == 0 {
+		return 0, gorm.ErrInvalidData
+	}
+	var mapped models.GameTopicMap
+	if err := r.db.Where("game_id = ?", gameID).First(&mapped).Error; err == nil {
+		return mapped.TopicID, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, err
+	}
+
+	name := strings.TrimSpace(gameName)
+	if name == "" {
+		name = "游戏话题"
+	}
+	topic, err := r.CreateTopic("游戏:"+name, false, time.Now())
+	if err != nil {
+		return 0, err
+	}
+
+	link := &models.GameTopicMap{GameID: gameID, TopicID: topic.ID}
+	if err := r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "game_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"topic_id", "updated_at"}),
+	}).Create(link).Error; err != nil {
+		return 0, err
+	}
+	return topic.ID, nil
+}
+
+func (r *TopicRepository) GetTopicIDsByGameIDs(gameIDs []uint64) ([]uint, error) {
+	if len(gameIDs) == 0 {
+		return []uint{}, nil
+	}
+	var rows []models.GameTopicMap
+	if err := r.db.Where("game_id IN ?", gameIDs).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]uint, 0, len(rows))
+	for _, row := range rows {
+		if row.TopicID != 0 {
+			out = append(out, row.TopicID)
+		}
+	}
+	return out, nil
 }
 
 func (r *TopicRepository) EnsureDefaultTopic() (uint, error) {

@@ -27,6 +27,9 @@ type RedisCommentRepository struct {
 type RedisFollowRepository struct {
 	client *redis.Client
 }
+type RedisGameRepository struct {
+	client *redis.Client
+}
 
 func NewRedisArticleRepository(client *redis.Client) *RedisArticleRepository {
 	return &RedisArticleRepository{client: client}
@@ -42,6 +45,10 @@ func NewRedisCommentRepository(client *redis.Client) *RedisCommentRepository {
 
 func NewRedisFollowRepository(client *redis.Client) *RedisFollowRepository {
 	return &RedisFollowRepository{client: client}
+}
+
+func NewRedisGameRepository(client *redis.Client) *RedisGameRepository {
+	return &RedisGameRepository{client: client}
 }
 
 // Init 初始化Redis连接

@@ -19,22 +19,6 @@ const (
 	articleSummaryMaxRunes = 100
 )
 
-func buildArticleSummary(content string) string {
-	s := strings.TrimSpace(content)
-	if s == "" {
-		return ""
-	}
-	// 单行化 + 压缩空白，避免摘要出现大片换行/空格
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.Join(strings.Fields(s), " ")
-
-	r := []rune(s)
-	if len(r) > articleSummaryMaxRunes {
-		r = r[:articleSummaryMaxRunes]
-	}
-	return string(r)
-}
 
 func normalizeSummaryText(in string) string {
 	// 摘要由用户输入：这里只做最小规范化，避免“看起来被覆盖”。
@@ -63,6 +47,7 @@ type ArticleService struct {
 	followRepo  *database.FollowRepository
 	redisRepo   *database.RedisArticleRepository
 	topicRepo   *database.TopicRepository
+	gameRepo    *database.GameRepository
 	guard       *cache.ArticleGuard
 }
 
@@ -96,7 +81,7 @@ func (s *ArticleService) fillCommentCounts(articles []*models.Article) {
 	}
 }
 
-func NewArticleService(dataRepo *database.ArticleRepository, userRepo *database.UserRepository, commentRepo *database.CommentRepository, followRepo *database.FollowRepository, rs *database.RedisArticleRepository, topicRepo *database.TopicRepository) *ArticleService {
+func NewArticleService(dataRepo *database.ArticleRepository, userRepo *database.UserRepository, commentRepo *database.CommentRepository, followRepo *database.FollowRepository, rs *database.RedisArticleRepository, topicRepo *database.TopicRepository, gameRepo *database.GameRepository) *ArticleService {
 	svc := &ArticleService{
 		articleDB:   dataRepo,
 		userRepo:    userRepo,
@@ -104,6 +89,7 @@ func NewArticleService(dataRepo *database.ArticleRepository, userRepo *database.
 		followRepo:  followRepo,
 		redisRepo:   rs,
 		topicRepo:   topicRepo,
+		gameRepo:    gameRepo,
 		guard:       cache.NewArticleGuard(1_000_000, 0.01),
 	}
 	svc.warmBloomFilter()
@@ -232,11 +218,50 @@ func (s *ArticleService) CreateArticle(article *models.Article) error {
 	if err != nil {
 		return err
 	}
+	if err := s.syncArticleGameTopicLinks(article.ID, article.GameIDs, article.CategoryID); err != nil {
+		return err
+	}
 	s.guard.Add(article.ID)
 	_ = s.redisRepo.SetArticleCache(article.ID, article)
 	_ = s.redisRepo.AddLatestArticle(article.ID, article.CreatedAt)
 	s.syncArticleToSearch(article)
 	return nil
+}
+
+func (s *ArticleService) syncArticleGameTopicLinks(articleID uint64, gameIDs []uint64, categoryID uint) error {
+	if articleID == 0 {
+		return gorm.ErrInvalidData
+	}
+	if err := s.articleDB.ReplaceArticleGames(articleID, gameIDs); err != nil {
+		return err
+	}
+	topicIDSet := make(map[uint]struct{})
+	if categoryID != 0 {
+		topicIDSet[categoryID] = struct{}{}
+	}
+	if len(gameIDs) > 0 && s.topicRepo != nil && s.gameRepo != nil {
+		for _, gameID := range gameIDs {
+			if gameID == 0 {
+				continue
+			}
+			game, err := s.gameRepo.GetGameByID(gameID)
+			if err != nil {
+				return tool.NewBizError(400, 40001, "游戏不存在")
+			}
+			tid, err := s.topicRepo.EnsureGameTopic(gameID, game.Name)
+			if err != nil {
+				return err
+			}
+			if tid != 0 {
+				topicIDSet[tid] = struct{}{}
+			}
+		}
+	}
+	topicIDs := make([]uint, 0, len(topicIDSet))
+	for tid := range topicIDSet {
+		topicIDs = append(topicIDs, tid)
+	}
+	return s.articleDB.ReplaceArticleTopics(articleID, topicIDs)
 }
 
 func (s *ArticleService) syncArticleToSearch(article *models.Article) {
@@ -560,7 +585,7 @@ func (s *ArticleService) DeleteArticle(userID uint64, articleID uint64) error {
 	return s.articleDB.DeleteArticle(articleID, userID)
 }
 
-func (s *ArticleService) UpdateArticle(userID uint64, articleID uint64, title, summary, content string, tagNames []string, categoryID uint) error {
+func (s *ArticleService) UpdateArticle(userID uint64, articleID uint64, title, summary, content string, tagNames []string, categoryID uint, gameIDs []uint64) error {
 	article, err := s.articleDB.GetArticleByID(articleID)
 	if err != nil {
 		return err
@@ -595,6 +620,9 @@ func (s *ArticleService) UpdateArticle(userID uint64, articleID uint64, title, s
 	article.Tags = tags
 
 	if err := s.articleDB.UpdateArticleWithTags(article); err != nil {
+		return err
+	}
+	if err := s.syncArticleGameTopicLinks(article.ID, gameIDs, article.CategoryID); err != nil {
 		return err
 	}
 

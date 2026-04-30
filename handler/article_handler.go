@@ -21,6 +21,8 @@ const anonSessionCookieName = "gb_sid"
 
 const articleSummaryMaxRunes = 500
 
+
+//限制最大标签数量和标签最大长度
 func normalizeTagNames(in []string) ([]string, bool) {
 	out := make([]string, 0, len(in))
 	seen := make(map[string]struct{}, len(in))
@@ -131,6 +133,7 @@ func (h *ArticleHandler) CreateArticleHandle(c *gin.Context) {
 		Summary:    summary,
 		AuthorID:   userID.(uint64),
 		CategoryID: p.CategoryID, // 保持命名统一
+		GameIDs:    p.GameIDs,
 	}
 	if len(tagNames) > 0 {
 		article.Tags = make([]models.Tag, 0, len(tagNames))
@@ -172,6 +175,7 @@ func (h *ArticleHandler) UpdateArticleHandle(c *gin.Context) {
 		Summary    string   `json:"summary"`
 		Content    string   `json:"content"`
 		Tags       []string `json:"tags"`
+		GameIDs    []uint64 `json:"game_ids"`
 		CategoryID uint     `json:"section_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -193,7 +197,7 @@ func (h *ArticleHandler) UpdateArticleHandle(c *gin.Context) {
 		return
 	}
 
-	if err := h.se.UpdateArticle(userID, id, body.Title, strings.TrimSpace(body.Summary), body.Content, tagNames, body.CategoryID); err != nil {
+	if err := h.se.UpdateArticle(userID, id, body.Title, strings.TrimSpace(body.Summary), body.Content, tagNames, body.CategoryID, body.GameIDs); err != nil {
 		tool.ResponseError(c, err)
 		return
 	}

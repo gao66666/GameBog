@@ -27,6 +27,7 @@ type App struct {
 	SearchHandler            *handler.SearchHandler
 	DMHandler                *handler.DMHandler
 	TopicHandler             *handler.TopicHandler
+	GameHandler              *handler.GameHandler
 }
 
 func (a *App) StartWorkers() {
@@ -56,6 +57,8 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	dmRepo := database.NewDMRepository(db)
 	dmRedis := database.NewRedisDMRepository(rdb)
 	topicRepo := database.NewTopicRepository(db)
+	gameRepo := database.NewGameRepository(db)
+	gameRedis := database.NewRedisGameRepository(rdb)
 
 	if err := userRepo.InitTable(); err != nil {
 		zap.L().Warn("用户表初始化失败", zap.Error(err))
@@ -78,13 +81,17 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	if err := topicRepo.InitTable(); err != nil {
 		zap.L().Warn("话题表初始化失败", zap.Error(err))
 	}
+	if err := gameRepo.InitTable(); err != nil {
+		zap.L().Warn("游戏相关表初始化失败", zap.Error(err))
+	}
 
 	// 2. Service 层
 	userSvc := service.NewUserService(userRepo, userRedis)
-	articleSvc := service.NewArticleService(articleRepo, userRepo, commentRepo, followRepo, articleRedis, topicRepo)
+	articleSvc := service.NewArticleService(articleRepo, userRepo, commentRepo, followRepo, articleRedis, topicRepo, gameRepo)
 	followSvc := service.NewFollowService(followRepo, userRepo, followRedis)
 	dmSvc := service.NewDMService(dmRepo, userRepo, dmRedis)
 	topicSvc := service.NewTopicService(topicRepo, articleRepo)
+	gameSvc := service.NewGameService(gameRepo, gameRedis, topicRepo)
 
 	// 3. Handler 层
 	notificationHandler := handler.NewNotificationHandler(notificationRepo, notificationRedis)
@@ -103,6 +110,7 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 		SearchHandler:            handler.NewSearchHandler(articleRepo, userRepo, commentRepo),
 		DMHandler:                dmHandler,
 		TopicHandler:             topicHandler,
+		GameHandler:              handler.NewGameHandler(gameSvc),
 	}
 }
 
@@ -191,6 +199,11 @@ func registerPublicRoutes(g *gin.RouterGroup, app *App) {
 	g.GET("/topics/:id", app.TopicHandler.GetTopicPublic)
 	g.GET("/topics/:id/articles", app.TopicHandler.GetTopicArticlesPublic)
 	g.GET("/topics/:id/discussions", app.TopicHandler.GetTopicDiscussionsPublic)
+	g.GET("/games/:id", app.GameHandler.GetGame)
+	g.GET("/games", app.GameHandler.ListGames)
+	g.GET("/games/:id/reviews", app.GameHandler.ListReviews)
+	g.GET("/game-reviews/:id", app.GameHandler.GetReview)
+	g.GET("/game-reviews/:id/comments", app.GameHandler.ListReviewComments)
 }
 
 func registerProtectedRoutes(g *gin.RouterGroup, app *App) {
@@ -218,5 +231,14 @@ func registerProtectedRoutes(g *gin.RouterGroup, app *App) {
 		authGroup.POST("/topics", app.TopicHandler.CreateTopicAuth)
 		authGroup.POST("/topics/:id/discussions", app.TopicHandler.CreateTopicDiscussionAuth)
 		authGroup.DELETE("/topics/:id", app.TopicHandler.DeleteTemporaryTopic)
+		authGroup.POST("/games", app.GameHandler.CreateGame)
+		authGroup.PUT("/games/:id", app.GameHandler.UpdateGame)
+		authGroup.DELETE("/games/:id", app.GameHandler.DeleteGame)
+		authGroup.POST("/games/:id/reviews", app.GameHandler.CreateReview)
+		authGroup.PUT("/game-reviews/:id", app.GameHandler.UpdateReview)
+		authGroup.DELETE("/game-reviews/:id", app.GameHandler.DeleteReview)
+		authGroup.POST("/game-reviews/:id/comments", app.GameHandler.CreateReviewComment)
+		authGroup.PUT("/game-review-comments/:id", app.GameHandler.UpdateReviewComment)
+		authGroup.DELETE("/game-review-comments/:id", app.GameHandler.DeleteReviewComment)
 	}
 }

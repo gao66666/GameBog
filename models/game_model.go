@@ -1,0 +1,96 @@
+package models
+
+import "time"
+
+// Game 游戏基础信息
+type Game struct {
+	ID          uint64    `gorm:"primaryKey;column:id" json:"id,string"`
+	Name        string    `gorm:"column:name;size:200;not null;index" json:"name"`
+	Description string    `gorm:"column:description;type:text" json:"description"`
+	ReleaseAt   time.Time `gorm:"column:release_date" json:"releaseAt"`
+	Publisher   string    `gorm:"column:publisher;size:200" json:"publisher"`
+	Developer   string    `gorm:"column:developer;size:200" json:"developer"`
+	CreatedAt   time.Time `gorm:"column:created_at" json:"createdAt"`
+	UpdatedAt   time.Time `gorm:"column:updated_at" json:"updatedAt"`
+}
+
+// GameReview 游戏点评
+type GameReview struct {
+	ID         uint64    `gorm:"primaryKey;column:id" json:"id,string"`
+	GameID     uint64    `gorm:"column:game_id;not null;index:idx_game_user,priority:1;index" json:"gameId,string"`
+	UserID     uint64    `gorm:"column:user_id;not null;index:idx_game_user,priority:2;index" json:"userId,string"`
+	ReviewedAt time.Time `gorm:"column:reviewed_at;not null;index" json:"reviewedAt"`
+	Rating     uint8     `gorm:"column:rating;type:tinyint unsigned;not null;default:5" json:"rating"`
+	Content    string    `gorm:"column:content;type:text;not null" json:"content"`
+	CreatedAt  time.Time `gorm:"column:created_at" json:"createdAt"`
+	UpdatedAt  time.Time `gorm:"column:updated_at" json:"updatedAt"`
+}
+
+// GameReviewComment 对游戏点评的评论
+type GameReviewComment struct {
+	ID        uint64    `gorm:"primaryKey;column:id" json:"id,string"`
+	ReviewID  uint64    `gorm:"column:review_id;not null;index:idx_review_parent,priority:1;index" json:"reviewId,string"`
+	UserID    uint64    `gorm:"column:user_id;not null;index" json:"userId,string"`
+	ParentID  uint64    `gorm:"column:parent_id;not null;default:0;index:idx_review_parent,priority:2" json:"parentId,string"`
+	Content   string    `gorm:"column:content;type:text;not null" json:"content"`
+	CreatedAt time.Time `gorm:"column:created_at" json:"createdAt"`
+	UpdatedAt time.Time `gorm:"column:updated_at" json:"updatedAt"`
+}
+
+type ParamCreateGame struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+	ReleaseAt   string `json:"releaseAt"`
+	Publisher   string `json:"publisher"`
+	Developer   string `json:"developer"`
+}
+
+type ParamUpdateGame struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+	ReleaseAt   string `json:"releaseAt"`
+	Publisher   string `json:"publisher"`
+	Developer   string `json:"developer"`
+}
+
+type ParamCreateGameReview struct {
+	Rating  uint8  `json:"rating" binding:"required"`
+	Content string `json:"content" binding:"required"`
+}
+
+type ParamUpdateGameReview struct {
+	Rating  uint8  `json:"rating" binding:"required"`
+	Content string `json:"content" binding:"required"`
+}
+
+type ParamCreateGameReviewComment struct {
+	ParentID uint64 `json:"parentId,string"`
+	Content  string `json:"content" binding:"required"`
+}
+
+type ParamUpdateGameReviewComment struct {
+	Content string `json:"content" binding:"required"`
+}
+
+// UserWallet 积分账户
+type UserWallet struct {
+	UserID        uint64    `gorm:"primaryKey;column:user_id" json:"userId,string"`
+	Balance       int64     `gorm:"column:balance;not null;default:0" json:"balance"`
+	FrozenBalance int64     `gorm:"column:frozen_balance;not null;default:0" json:"frozenBalance"`
+	Version       int       `gorm:"column:version;not null;default:0" json:"version"`
+	UpdatedAt     time.Time `gorm:"column:updated_at" json:"updatedAt"`
+	CreatedAt     time.Time `gorm:"column:created_at" json:"createdAt"`
+}
+
+// PointsTransaction 积分流水（不可变记录）
+type PointsTransaction struct {
+	TxnID        uint64    `gorm:"primaryKey;column:txn_id" json:"txnId,string"`
+	UserID       uint64    `gorm:"column:user_id;not null;index" json:"userId,string"`
+	Amount       int64     `gorm:"column:amount;not null" json:"amount"`
+	Type         string    `gorm:"column:type;size:32;not null" json:"type"`
+	RefType      string    `gorm:"column:ref_type;size:32;not null" json:"refType"`
+	RefID        uint64    `gorm:"column:ref_id" json:"refId,string"`
+	BalanceAfter int64     `gorm:"column:balance_after;not null" json:"balanceAfter"`
+	Description  string    `gorm:"column:description;size:255" json:"description"`
+	CreatedAt    time.Time `gorm:"column:created_at" json:"createdAt"`
+}

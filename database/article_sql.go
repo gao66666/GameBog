@@ -27,7 +27,7 @@ func NewArticleRepository(db *gorm.DB) *ArticleRepository {
 
 // 初始化表结构
 func (r *ArticleRepository) InitTable() error {
-	err := r.db.AutoMigrate(&models.Article{}, &models.ArticleLike{}, &models.Tag{})
+	err := r.db.AutoMigrate(&models.Article{}, &models.ArticleLike{}, &models.Tag{}, &models.ArticleGame{}, &models.ArticleTopic{})
 	if err != nil {
 		return ErrInitArticle
 	}
@@ -316,6 +316,60 @@ func (r *ArticleRepository) EnsureLikeState(userID, articleID uint64, isCancel b
 
 	res := r.db.Where("user_id = ? AND article_id = ?", userID, articleID).Delete(&models.ArticleLike{})
 	return res.RowsAffected > 0, res.Error
+}
+
+func (r *ArticleRepository) ReplaceArticleGames(articleID uint64, gameIDs []uint64) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("article_id = ?", articleID).Delete(&models.ArticleGame{}).Error; err != nil {
+			return err
+		}
+		if len(gameIDs) == 0 {
+			return nil
+		}
+		seen := make(map[uint64]struct{}, len(gameIDs))
+		rows := make([]models.ArticleGame, 0, len(gameIDs))
+		for _, id := range gameIDs {
+			if id == 0 {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			rows = append(rows, models.ArticleGame{ArticleID: articleID, GameID: id})
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		return tx.Create(&rows).Error
+	})
+}
+
+func (r *ArticleRepository) ReplaceArticleTopics(articleID uint64, topicIDs []uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("article_id = ?", articleID).Delete(&models.ArticleTopic{}).Error; err != nil {
+			return err
+		}
+		if len(topicIDs) == 0 {
+			return nil
+		}
+		seen := make(map[uint]struct{}, len(topicIDs))
+		rows := make([]models.ArticleTopic, 0, len(topicIDs))
+		for _, id := range topicIDs {
+			if id == 0 {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			rows = append(rows, models.ArticleTopic{ArticleID: articleID, TopicID: id})
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		return tx.Create(&rows).Error
+	})
 }
 
 // SearchArticlesFallback ES 不可用时的降级查询：简单 LIKE 匹配。

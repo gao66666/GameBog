@@ -24,3 +24,11 @@ type TopicDiscussion struct {
 	Content   string    `gorm:"column:content;size:500;not null" json:"content"`
 	CreatedAt time.Time `gorm:"column:created_at" json:"createdAt"`
 }
+
+// GameTopicMap 游戏与话题映射（一个游戏一个专属话题）。
+type GameTopicMap struct {
+	GameID    uint64    `gorm:"primaryKey;column:game_id" json:"gameId,string"`
+	TopicID   uint      `gorm:"column:topic_id;not null;index" json:"topicId"`
+	CreatedAt time.Time `gorm:"column:created_at" json:"createdAt"`
+	UpdatedAt time.Time `gorm:"column:updated_at" json:"updatedAt"`
+}

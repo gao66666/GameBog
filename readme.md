@@ -82,19 +82,25 @@ Redis数据用于前端实时展示，保证高并发下的性能。
 
 ## 快速启动
 
-1. 启动依赖（至少需要 MySQL、Redis，可选 NSQ/Kafka/Elasticsearch）：
+1. 本地开发（仅启动依赖）：
 
 ```bash
 docker compose up -d
 ```
 
-2. 运行服务：
+2. 本地运行服务：
 
 ```bash
 go run main.go
 ```
 
-3. 健康检查与指标：
+3. 服务器/容器部署（启动 app + 依赖）：
+
+```bash
+docker compose --profile app up -d --build
+```
+
+4. 健康检查与指标：
 
 - `GET /healthz`
 - `GET /readyz`

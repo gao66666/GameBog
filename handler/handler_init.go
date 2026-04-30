@@ -35,3 +35,11 @@ type FollowHandler struct {
 func NewFollowHandler(serve *service.FollowService) *FollowHandler {
 	return &FollowHandler{se: serve}
 }
+
+type GameHandler struct {
+	se *service.GameService
+}
+
+func NewGameHandler(serve *service.GameService) *GameHandler {
+	return &GameHandler{se: serve}
+}

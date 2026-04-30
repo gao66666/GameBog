@@ -73,23 +73,23 @@ func Init(configPath string) (*Runtime, error) {
 	}
 
 	// pprof（仅在显式启用时启动；建议线上只绑定 localhost）
-	if setting.Conf.ObservabilityConfig != nil && setting.Conf.ObservabilityConfig.EnablePprof {
-		srv := &http.Server{
-			Addr:              setting.Conf.ObservabilityConfig.PprofAddr,
-			Handler:           http.DefaultServeMux,
-			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       30 * time.Second,
-			WriteTimeout:      2 * time.Minute,
-			IdleTimeout:       60 * time.Second,
-		}
-		rt.pprofServer = srv
-		go func() {
-			zap.L().Info("pprof enabled", zap.String("addr", srv.Addr))
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				zap.L().Error("pprof server stopped", zap.Error(err))
-			}
-		}()
-	}
+	// if setting.Conf.ObservabilityConfig != nil && setting.Conf.ObservabilityConfig.EnablePprof {
+	// 	srv := &http.Server{
+	// 		Addr:              setting.Conf.ObservabilityConfig.PprofAddr,
+	// 		Handler:           http.DefaultServeMux,
+	// 		ReadHeaderTimeout: 5 * time.Second,
+	// 		ReadTimeout:       30 * time.Second,
+	// 		WriteTimeout:      2 * time.Minute,
+	// 		IdleTimeout:       60 * time.Second,
+	// 	}
+	// 	rt.pprofServer = srv
+	// 	go func() {
+	// 		zap.L().Info("pprof enabled", zap.String("addr", srv.Addr))
+	// 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	// 			zap.L().Error("pprof server stopped", zap.Error(err))
+	// 		}
+	// 	}()
+	// }
 
 	// 关闭开发环境的自动种子数据，避免默认生成用户和文章
 	// 如需再次启用，可手动调用 seedDevData(dbClient)

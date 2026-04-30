@@ -1,6 +1,7 @@
 /* 话题页：可用话题列表固定高度，始终为6条高度 */
 .topic-list-fixed {
-    min-height: 400px; /* 更大高度，保证5个话题无滚动条且空间宽裕 */
+    min-height: 400px;
+    /* 更大高度，保证5个话题无滚动条且空间宽裕 */
     max-height: 400px;
     overflow-y: hidden;
     box-sizing: border-box;
@@ -11,6 +12,7 @@
     color: #111 !important;
     text-decoration: none;
 }
+
 .topic-list-fixed a:hover {
     text-decoration: underline;
 }
@@ -31,9 +33,11 @@
     justify-content: center;
     transition: none;
 }
+
 #topicDeleteBtn:hover {
     background: transparent !important;
 }
+
 .me-action-row {
     display: flex;
     flex-direction: row;

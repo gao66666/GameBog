@@ -17,6 +17,7 @@ type Article struct {
 
 	// 关联部分
 	Tags      []Tag     `gorm:"many2many:article_tags;" json:"tags"`
+	GameIDs   []uint64  `gorm:"-" json:"gameIds,omitempty"`
 	CreatedAt time.Time `gorm:"column:created_at" json:"createdAt"`
 	UpdatedAt time.Time `gorm:"column:updated_at" json:"updatedAt"`
 }
@@ -41,5 +42,18 @@ type ParamPostArticle struct {
 	Summary    string   `json:"summary" binding:"required"`
 	Content    string   `json:"content" binding:"required"`
 	Tags       []string `json:"tags"`
+	GameIDs    []uint64 `json:"game_ids"`
 	CategoryID uint     `json:"section_id"` // 板块ID，可以先传0
+}
+
+type ArticleGame struct {
+	ArticleID uint64    `gorm:"primaryKey;column:article_id;index"`
+	GameID    uint64    `gorm:"primaryKey;column:game_id;index"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+}
+
+type ArticleTopic struct {
+	ArticleID uint64    `gorm:"primaryKey;column:article_id;index"`
+	TopicID   uint      `gorm:"primaryKey;column:topic_id;index"`
+	CreatedAt time.Time `gorm:"column:created_at"`
 }
