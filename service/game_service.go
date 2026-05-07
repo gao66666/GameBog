@@ -39,6 +39,12 @@ func (s *GameService) CreateGame(game *models.Game) error {
 		if _, err := s.topicRepo.EnsureGameTopic(game.ID, game.Name); err != nil {
 			return err
 		}
+		if s.gameRedis != nil {
+			_ = s.gameRedis.DeleteGameTopicMap(game.ID)
+		}
+	}
+	if s.gameRedis != nil {
+		_ = s.gameRedis.InvalidateGamesListCache()
 	}
 	return nil
 }
@@ -56,6 +62,7 @@ func (s *GameService) UpdateGame(game *models.Game) error {
 	}
 	if s.gameRedis != nil {
 		_ = s.gameRedis.DeleteKey(fmt.Sprintf("game:detail:%d", game.ID))
+		_ = s.gameRedis.InvalidateGamesListCache()
 	}
 	return nil
 }
@@ -70,6 +77,8 @@ func (s *GameService) DeleteGame(id uint64) error {
 	if s.gameRedis != nil {
 		_ = s.gameRedis.DeleteKey(fmt.Sprintf("game:detail:%d", id))
 		_ = s.gameRedis.DeleteKeysByPattern(fmt.Sprintf("game:reviews:list:%d:*", id))
+		_ = s.gameRedis.DeleteGameTopicMap(id)
+		_ = s.gameRedis.InvalidateGamesListCache()
 	}
 	return nil
 }
@@ -100,7 +109,19 @@ func (s *GameService) ListGames(page, size int) ([]*models.Game, int64, error) {
 	if size <= 0 {
 		size = 10
 	}
-	return s.gameRepo.ListGames(page, size)
+	if s.gameRedis != nil {
+		if list, total, hit, err := s.gameRedis.GetGamesList(page, size); err == nil && hit {
+			return list, total, nil
+		}
+	}
+	list, total, err := s.gameRepo.ListGames(page, size)
+	if err != nil {
+		return nil, 0, err
+	}
+	if s.gameRedis != nil {
+		_ = s.gameRedis.SetGamesList(page, size, list, total)
+	}
+	return list, total, nil
 }
 
 func (s *GameService) CreateReview(review *models.GameReview) error {
@@ -113,6 +134,11 @@ func (s *GameService) CreateReview(review *models.GameReview) error {
 	}
 	if review.ReviewedAt.IsZero() {
 		review.ReviewedAt = time.Now()
+	}
+	if _, err := s.gameRepo.GetReviewByGameAndUser(review.GameID, review.UserID); err == nil {
+		return tool.NewBizError(400, 40001, "您已对该游戏发表过点评，请编辑原点评")
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
 	}
 	if err := s.gameRepo.CreateReview(review); err != nil {
 		return err
@@ -289,6 +315,94 @@ func (s *GameService) ListReviewComments(reviewID uint64, page, size int) ([]*mo
 		_ = s.gameRedis.SetReviewCommentList(reviewID, page, size, list)
 	}
 	return list, total, nil
+}
+
+// --- UserGamePlay ---
+
+func (s *GameService) UpsertUserGamePlay(ugp *models.UserGamePlay) error {
+	if ugp == nil || ugp.UserID == 0 || ugp.GameID == 0 {
+		return errGameInvalidParam
+	}
+	if err := s.gameRepo.UpsertUserGamePlay(ugp); err != nil {
+		return err
+	}
+	if s.gameRedis != nil {
+		_ = s.gameRedis.DeleteUserGamePlay(ugp.UserID, ugp.GameID)
+		_ = s.gameRedis.DeleteUserGamePlayList(ugp.UserID)
+	}
+	return nil
+}
+
+func (s *GameService) GetUserGamePlay(userID, gameID uint64) (*models.UserGamePlay, error) {
+	if userID == 0 || gameID == 0 {
+		return nil, errGameInvalidParam
+	}
+	if s.gameRedis != nil {
+		if cached, hit, err := s.gameRedis.GetUserGamePlay(userID, gameID); err == nil && hit {
+			return cached, nil
+		}
+	}
+	ugp, err := s.gameRepo.GetUserGamePlay(userID, gameID)
+	if err != nil {
+		return nil, err
+	}
+	if s.gameRedis != nil {
+		_ = s.gameRedis.SetUserGamePlay(ugp)
+	}
+	return ugp, nil
+}
+
+func (s *GameService) ListUserGamePlays(userID uint64) ([]*models.UserGamePlay, error) {
+	if userID == 0 {
+		return nil, errGameInvalidParam
+	}
+	if s.gameRedis != nil {
+		if cached, hit, err := s.gameRedis.GetUserGamePlayList(userID); err == nil && hit {
+			return cached, nil
+		}
+	}
+	list, err := s.gameRepo.ListUserGamePlays(userID)
+	if err != nil {
+		return nil, err
+	}
+	if s.gameRedis != nil {
+		_ = s.gameRedis.SetUserGamePlayList(userID, list)
+	}
+	return list, nil
+}
+
+func (s *GameService) DeleteUserGamePlay(userID, gameID uint64) error {
+	if userID == 0 || gameID == 0 {
+		return errGameInvalidParam
+	}
+	if err := s.gameRepo.DeleteUserGamePlay(userID, gameID); err != nil {
+		return err
+	}
+	if s.gameRedis != nil {
+		_ = s.gameRedis.DeleteUserGamePlay(userID, gameID)
+		_ = s.gameRedis.DeleteUserGamePlayList(userID)
+	}
+	return nil
+}
+
+// GetGameTopicID 获取游戏对应的话题 ID（走 Redis 缓存穿透）。
+func (s *GameService) GetGameTopicID(gameID uint64) (uint, error) {
+	if gameID == 0 {
+		return 0, errGameInvalidParam
+	}
+	if s.gameRedis != nil {
+		if cached, hit, err := s.gameRedis.GetGameTopicMap(gameID); err == nil && hit {
+			return cached, nil
+		}
+	}
+	topicID, err := s.topicRepo.GetTopicIDByGameID(gameID)
+	if err != nil {
+		return 0, err
+	}
+	if s.gameRedis != nil {
+		_ = s.gameRedis.SetGameTopicMap(gameID, topicID)
+	}
+	return topicID, nil
 }
 
 func IsNotFound(err error) bool {

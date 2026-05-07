@@ -119,3 +119,91 @@ func (w *StatsWorker) flush() {
 
 	zap.L().Info("统计数据批量落库完成")
 }
+
+// CommentStatsWorker 评论点赞统计消费者
+type CommentStatsWorker struct {
+	mu            sync.Mutex
+	likeBuffer    map[uint64]int
+	flushInterval time.Duration
+
+	commentDB *database.CommentRepository
+}
+
+func NewCommentStatsWorker(commentDB *database.CommentRepository) *CommentStatsWorker {
+	return &CommentStatsWorker{
+		likeBuffer:    make(map[uint64]int),
+		flushInterval: 1 * time.Minute,
+		commentDB:     commentDB,
+	}
+}
+
+func (w *CommentStatsWorker) HandleMessage(m *nsq.Message) error {
+	if len(m.Body) == 0 {
+		return nil
+	}
+
+	var msg CommentActionMsg
+	if err := json.Unmarshal(m.Body, &msg); err != nil {
+		zap.L().Error("解析评论NSQ消息失败，视为脏消息直接确认丢弃", zap.Error(err))
+		return nil
+	}
+
+	if msg.CommentID == 0 {
+		zap.L().Warn("NSQ消息缺少comment_id，直接丢弃")
+		return nil
+	}
+
+	var delta int
+	switch msg.Type {
+	case "like":
+		delta = 1
+	case "unlike":
+		delta = -1
+	default:
+		zap.L().Warn("未知的评论事件类型，直接确认丢弃", zap.String("type", msg.Type))
+		return nil
+	}
+
+	w.mu.Lock()
+	w.likeBuffer[msg.CommentID] += delta
+	w.mu.Unlock()
+	return nil
+}
+
+func (w *CommentStatsWorker) StartFlushTicks() {
+	ticker := time.NewTicker(w.flushInterval)
+	go func() {
+		for range ticker.C {
+			w.flush()
+		}
+	}()
+}
+
+func (w *CommentStatsWorker) flush() {
+	w.mu.Lock()
+	buf := make(map[uint64]int, len(w.likeBuffer))
+	for id, delta := range w.likeBuffer {
+		buf[id] = delta
+	}
+	w.mu.Unlock()
+
+	if len(buf) == 0 {
+		return
+	}
+
+	if err := w.commentDB.BatchIncrementCommentStats(buf); err != nil {
+		zap.L().Warn("评论点赞批量落库失败，将保留缓冲区等待下次重试", zap.Error(err))
+		return
+	}
+
+	w.mu.Lock()
+	for id, delta := range buf {
+		w.likeBuffer[id] -= delta
+		if w.likeBuffer[id] == 0 {
+			delete(w.likeBuffer, id)
+		}
+	}
+	w.mu.Unlock()
+
+	zap.L().Info("评论点赞批量落库完成")
+}

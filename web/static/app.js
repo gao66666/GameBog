@@ -86,6 +86,14 @@
         if (navTopics) {
             navTopics.classList.toggle('nav-active', path === '/topics' || path.indexOf('/topic/') === 0);
         }
+        const navGameLibrary = qs('navGameLibrary');
+        if (navGameLibrary) {
+            navGameLibrary.classList.toggle('nav-active', path === '/game-library' || path.indexOf('/game/') === 0);
+        }
+        const navAgent = qs('navAgent');
+        if (navAgent) {
+            navAgent.classList.toggle('nav-active', path === '/agent');
+        }
         if (navMe) {
             navMe.classList.toggle('nav-active', path === '/me');
         }
@@ -148,7 +156,10 @@
         return _wsStatus;
     }
 
-    window.GoBlog = {
+    /** 游戏库/详情：数据库未填 coverUrl 时使用的统一默认封面（勿与 Picsum 随机图混淆） */
+    var defaultGameCoverUrl = 'https://pic4.zhimg.com/v2-cad31f1efa6d4940651ebec9063fd5cb_r.jpg';
+
+    window.GameBog = {
         qs,
         api,
         getAuth,
@@ -157,11 +168,18 @@
         setupNav,
         ensureWSConnected,
         getWSStatus,
+        defaultGameCoverUrl: defaultGameCoverUrl,
     };
+    window.GoBlog = window.GameBog;
 
     document.addEventListener('DOMContentLoaded', function () {
         setupNav();
         // 登录态：任意页面保持 WS 连接（用于在线状态/通知推送）
         ensureWSConnected();
+
+        // 动态加载 AI 助手侧边栏
+        var as = document.createElement('script');
+        as.src = '/static/agent-sidebar.js';
+        document.body.appendChild(as);
     });
 })();

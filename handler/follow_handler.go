@@ -42,3 +42,71 @@ func (h *FollowHandler) CreateFollowAuth(c *gin.Context) {
 	}
 	tool.ResponseSuccess(c, gin.H{"followingId": strconv.FormatUint(req.FollowingID, 10)}, "关注成功")
 }
+
+// --- TopicFollow ---
+
+// FollowTopicHandle 关注话题（body: { "topicId": "<id>" }）。
+func (h *FollowHandler) FollowTopicHandle(c *gin.Context) {
+	var req struct {
+		TopicID uint `json:"topicId,string" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.TopicID == 0 {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	userID := c.GetUint64("userID")
+	if err := h.se.FollowTopicByTopicID(userID, req.TopicID); err != nil {
+		tool.ResponseError(c, err)
+		return
+	}
+	tool.ResponseSuccess(c, nil, "关注成功")
+}
+
+// UnfollowTopicHandle 取消关注话题（body: { "topicId": "<id>" }）。
+func (h *FollowHandler) UnfollowTopicHandle(c *gin.Context) {
+	var req struct {
+		TopicID uint `json:"topicId,string" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.TopicID == 0 {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	userID := c.GetUint64("userID")
+	if err := h.se.UnfollowTopicByTopicID(userID, req.TopicID); err != nil {
+		tool.ResponseError(c, err)
+		return
+	}
+	tool.ResponseSuccess(c, nil, "已取消关注")
+}
+
+// GetMyFollowingUserCount 获取当前用户关注的「用户」数量（用于个人中心等展示）。
+func (h *FollowHandler) GetMyFollowingUserCount(c *gin.Context) {
+	userID := c.GetUint64("userID")
+	if userID == 0 {
+		tool.ResponseError(c, ErrInvalidToken)
+		return
+	}
+	var n int64
+	var err error
+	if h.userSe != nil {
+		n, err = h.userSe.GetFollowingUsersCountCached(userID)
+	} else {
+		n, err = h.se.CountFollowingUsers(userID)
+	}
+	if err != nil {
+		tool.ResponseError(c, CodeServerBusy)
+		return
+	}
+	tool.ResponseSuccess(c, gin.H{"count": n}, "ok")
+}
+
+// ListMyFollowedTopicsHandle 获取我关注的话题列表（含 topicName）。
+func (h *FollowHandler) ListMyFollowedTopicsHandle(c *gin.Context) {
+	userID := c.GetUint64("userID")
+	list, err := h.se.ListFollowedTopicsWithNames(userID)
+	if err != nil {
+		tool.ResponseError(c, CodeServerBusy)
+		return
+	}
+	tool.ResponseSuccess(c, gin.H{"list": list})
+}

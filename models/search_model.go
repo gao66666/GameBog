@@ -6,4 +6,5 @@ type SearchSyncPayload struct {
 	AuthorName string   `json:"author_name"`
 	Tags       []string `json:"tags"`
 	Summary    string   `json:"summary"`
+	CoverURL   string   `json:"cover_url"`
 }

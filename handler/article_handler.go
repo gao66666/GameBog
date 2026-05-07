@@ -131,6 +131,7 @@ func (h *ArticleHandler) CreateArticleHandle(c *gin.Context) {
 		Title:      p.Title,
 		Content:    p.Content,
 		Summary:    summary,
+		CoverURL:   p.CoverURL,
 		AuthorID:   userID.(uint64),
 		CategoryID: p.CategoryID, // 保持命名统一
 		GameIDs:    p.GameIDs,
@@ -174,6 +175,7 @@ func (h *ArticleHandler) UpdateArticleHandle(c *gin.Context) {
 		Title      string   `json:"title"`
 		Summary    string   `json:"summary"`
 		Content    string   `json:"content"`
+		CoverURL   string   `json:"cover_url"`
 		Tags       []string `json:"tags"`
 		GameIDs    []uint64 `json:"game_ids"`
 		CategoryID uint     `json:"section_id"`
@@ -197,7 +199,7 @@ func (h *ArticleHandler) UpdateArticleHandle(c *gin.Context) {
 		return
 	}
 
-	if err := h.se.UpdateArticle(userID, id, body.Title, strings.TrimSpace(body.Summary), body.Content, tagNames, body.CategoryID, body.GameIDs); err != nil {
+	if err := h.se.UpdateArticle(userID, id, body.Title, strings.TrimSpace(body.Summary), body.Content, body.CoverURL, tagNames, body.CategoryID, body.GameIDs); err != nil {
 		tool.ResponseError(c, err)
 		return
 	}
@@ -233,12 +235,16 @@ func (h *ArticleHandler) ReadArticleHandle(c *gin.Context) {
 		zap.L().Warn("render markdown failed", zap.Error(err))
 	}
 
-	tool.ResponseSuccess(c, gin.H{
-		"article_id":   idStr,
-		"title":        article.Title,
-		"summary":      article.Summary,
-		"content":      article.Content,
-		"html_content": htmlBuf.String(),
+	cu := models.EffectiveArticleCoverURL(article)
+	payload := gin.H{
+		"article_id":    idStr,
+		"title":         article.Title,
+		"summary":       article.Summary,
+		"content":       article.Content,
+		"html_content":  htmlBuf.String(),
+		"cover_url":     cu,
+		"coverUrl":      cu,
+		"cover_url_edit": strings.TrimSpace(article.CoverURL),
 		"view_count":   article.ViewCount,
 		"like_count":   article.LikeCount,
 		"author_id":    strconv.FormatUint(article.AuthorID, 10),
@@ -246,7 +252,22 @@ func (h *ArticleHandler) ReadArticleHandle(c *gin.Context) {
 		"categoryId":   article.CategoryID,
 		"created_at":   article.CreatedAt.Format("2006-01-02 15:04:05"),
 		"tags":         article.Tags,
-	}, "查询成功")
+	}
+
+	uid := OptionalJWTUserID(c)
+	if uid != 0 {
+		collected, err := h.se.IsArticleCollected(uid, id)
+		if err != nil {
+			zap.L().Warn("IsArticleCollected failed", zap.Error(err))
+			payload["is_collected"] = false
+		} else {
+			payload["is_collected"] = collected
+		}
+	} else {
+		payload["is_collected"] = false
+	}
+
+	tool.ResponseSuccess(c, payload, "查询成功")
 }
 
 func (h *ArticleHandler) GetArticleListHandler(c *gin.Context) {
@@ -361,7 +382,7 @@ func (h *ArticleHandler) GetArticleListPublic(c *gin.Context) {
 	tool.ResponseSuccess(c, gin.H{"article_list": list, "total": total}, "查询成功")
 }
 
-// GetArticleLeaderboardPublic 提供给首页使用的排行榜（默认阅读榜）。
+// GetArticleLeaderboardPublic 提供给首页使用的本周热榜（最近 7 个本地自然日合计，默认阅读）。
 // type=view|like
 func (h *ArticleHandler) GetArticleLeaderboardPublic(c *gin.Context) {
 	actionType := c.DefaultQuery("type", "view")
@@ -449,4 +470,48 @@ func (h *ArticleHandler) LikeArticleHandle(c *gin.Context) {
 	}
 
 	tool.ResponseSuccess(c, nil, "操作已接收")
+}
+
+// --- ArticleCollection ---
+
+func (h *ArticleHandler) CollectArticleHandle(c *gin.Context) {
+	var req struct {
+		ArticleID uint64 `json:"articleId,string" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.ArticleID == 0 {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	userID := c.GetUint64("userID")
+	if err := h.se.CollectArticle(userID, req.ArticleID); err != nil {
+		tool.ResponseError(c, CodeServerBusy)
+		return
+	}
+	tool.ResponseSuccess(c, nil, "收藏成功")
+}
+
+func (h *ArticleHandler) UncollectArticleHandle(c *gin.Context) {
+	var req struct {
+		ArticleID uint64 `json:"articleId,string" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.ArticleID == 0 {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	userID := c.GetUint64("userID")
+	if err := h.se.UncollectArticle(userID, req.ArticleID); err != nil {
+		tool.ResponseError(c, CodeServerBusy)
+		return
+	}
+	tool.ResponseSuccess(c, nil, "已取消收藏")
+}
+
+func (h *ArticleHandler) ListMyCollectionsHandle(c *gin.Context) {
+	userID := c.GetUint64("userID")
+	list, err := h.se.ListMyCollections(userID)
+	if err != nil {
+		tool.ResponseError(c, CodeServerBusy)
+		return
+	}
+	tool.ResponseSuccess(c, gin.H{"list": list})
 }

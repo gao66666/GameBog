@@ -27,6 +27,10 @@ const (
 	// 首页“最新博客”（全部）：按时间倒序的 ZSET，仅保留最近 18 条（3 页 * 6 条）。
 	latestArticleZSetKey   = "article:latest"
 	latestArticleKeepCount = 18
+
+	// 本周热榜：按本地日历日分桶，合并最近 7 天（今天 + 前 6 天）；单日桶过期后自动回收。
+	weeklyLeaderboardBuckets = 7
+	leaderboardDayBucketTTL  = 10 * 24 * time.Hour
 )
 
 type logicalArticleCache struct {
@@ -85,37 +89,81 @@ func (r *RedisArticleRepository) DecrStats(aid uint64, field string) error {
 	return r.client.HIncrBy(ctx, key, field, -1).Err()
 }
 
+// weeklyLeaderboardDaySuffixes 返回最近 n 个本地日历日的 YYYYMMDD（含今天，向前共 n 天）。
+func weeklyLeaderboardDaySuffixes(now time.Time, n int) []string {
+	loc := time.Local
+	out := make([]string, n)
+	t := now.In(loc)
+	for i := 0; i < n; i++ {
+		d := t.AddDate(0, 0, -i)
+		out[i] = d.Format("20060102")
+	}
+	return out
+}
+
+func weeklyLeaderboardRedisKeys(actionType string, now time.Time) []string {
+	suffixes := weeklyLeaderboardDaySuffixes(now, weeklyLeaderboardBuckets)
+	keys := make([]string, len(suffixes))
+	for i, suf := range suffixes {
+		keys[i] = fmt.Sprintf("article:leaderboard:%s:%s", actionType, suf)
+	}
+	return keys
+}
+
 func (r *RedisArticleRepository) UpdateLeaderboard(aid uint64, actionType string) error {
 	ctx := context.Background()
-	// 根据类型存入不同的排行榜（阅读榜/点赞榜）
-	key := fmt.Sprintf("article:leaderboard:%s", actionType)
+	suffix := time.Now().In(time.Local).Format("20060102")
+	key := fmt.Sprintf("article:leaderboard:%s:%s", actionType, suffix)
+	member := strconv.FormatUint(aid, 10)
 
-	// ZIncrBy: 如果成员不存在则创建并设置分数为1，存在则累加1
-	return r.client.ZIncrBy(ctx, key, 1, strconv.FormatUint(aid, 10)).Err()
+	pipe := r.client.TxPipeline()
+	pipe.ZIncrBy(ctx, key, 1, member)
+	pipe.Expire(ctx, key, leaderboardDayBucketTTL)
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 // UpdateLeaderboardDecr 减少排行榜中的分数
 func (r *RedisArticleRepository) UpdateLeaderboardDecr(aid uint64, actionType string) error {
 	ctx := context.Background()
-	key := fmt.Sprintf("article:leaderboard:%s", actionType)
+	suffix := time.Now().In(time.Local).Format("20060102")
+	key := fmt.Sprintf("article:leaderboard:%s:%s", actionType, suffix)
+	member := strconv.FormatUint(aid, 10)
 
-	// ZIncrBy 传 -1，实现分数减少
-	// 即使分数降为 0，该成员依然会留在排行榜中，直到被 TrimLeaderboard 剔除
-	return r.client.ZIncrBy(ctx, key, -1, strconv.FormatUint(aid, 10)).Err()
+	pipe := r.client.TxPipeline()
+	pipe.ZIncrBy(ctx, key, -1, member)
+	pipe.Expire(ctx, key, leaderboardDayBucketTTL)
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
-// GetTopArticleIDs 获取前 N 名的文章 ID
+// mergeWeeklyLeaderboard 将最近 7 天的日桶合并到 dest（分数 SUM），供查询或下游逻辑使用。
+func (r *RedisArticleRepository) mergeWeeklyLeaderboard(ctx context.Context, actionType, dest string, now time.Time) error {
+	keys := weeklyLeaderboardRedisKeys(actionType, now)
+	if len(keys) == 0 {
+		return nil
+	}
+	return r.client.ZUnionStore(ctx, dest, &redis.ZStore{
+		Keys:      keys,
+		Aggregate: "SUM",
+	}).Err()
+}
+
+// GetTopArticleIDs 获取前 N 名的文章 ID（最近 7 天阅读/点赞合计）。
 func (r *RedisArticleRepository) GetTopArticleIDs(actionType string, n int) ([]uint64, error) {
 	ctx := context.Background()
-	key := fmt.Sprintf("article:leaderboard:%s", actionType)
+	now := time.Now()
+	tmpKey := fmt.Sprintf("article:leaderboard:merge:%s:%d", actionType, now.UnixNano())
+	if err := r.mergeWeeklyLeaderboard(ctx, actionType, tmpKey, now); err != nil {
+		return nil, err
+	}
+	defer func() { _ = r.client.Del(ctx, tmpKey).Err() }()
 
-	// ZRevRange: 从高到低取 ID
-	result, err := r.client.ZRevRange(ctx, key, 0, int64(n-1)).Result()
+	result, err := r.client.ZRevRange(ctx, tmpKey, 0, int64(n-1)).Result()
 	if err != nil {
 		return nil, err
 	}
 
-	// 将 string 转换为 uint64
 	ids := make([]uint64, 0, len(result))
 	for _, s := range result {
 		id, _ := strconv.ParseUint(s, 10, 64)
@@ -126,14 +174,21 @@ func (r *RedisArticleRepository) GetTopArticleIDs(actionType string, n int) ([]u
 
 // 获取前10名
 func (r *RedisArticleRepository) GetTopArticles(actionType string, n int64) ([]string, error) {
-	key := fmt.Sprintf("article:leaderboard:%s", actionType)
-	// ZRevRange: 按分数从高到低取前 N 名
-	return r.client.ZRevRange(context.Background(), key, 0, n-1).Result()
+	ctx := context.Background()
+	now := time.Now()
+	tmpKey := fmt.Sprintf("article:leaderboard:merge:%s:%d", actionType, now.UnixNano())
+	if err := r.mergeWeeklyLeaderboard(ctx, actionType, tmpKey, now); err != nil {
+		return nil, err
+	}
+	defer func() { _ = r.client.Del(ctx, tmpKey).Err() }()
+
+	return r.client.ZRevRange(ctx, tmpKey, 0, n-1).Result()
 }
 func (r *RedisArticleRepository) TrimLeaderboard(actionType string, keep int64) error {
 	ctx := context.Background()
-	key := fmt.Sprintf("article:leaderboard:%s", actionType)
-	// 保留前 keep 名，删掉排名在 -(keep+1) 之前的
+	suffix := time.Now().In(time.Local).Format("20060102")
+	key := fmt.Sprintf("article:leaderboard:%s:%s", actionType, suffix)
+	// 保留前 keep 名，删掉排名在 -(keep+1) 之前的（仅裁剪「当天」桶）
 	return r.client.ZRemRangeByRank(ctx, key, 0, -(keep + 1)).Err()
 }
 
@@ -383,9 +438,14 @@ func (r *RedisArticleRepository) IsHotArticle(aid uint64) (bool, error) {
 
 func (r *RedisArticleRepository) RefreshHotArticlesFromLeaderboard(actionType string, topN int64, minScore float64, ttl time.Duration) error {
 	ctx := context.Background()
-	leaderboardKey := fmt.Sprintf("article:leaderboard:%s", actionType)
+	now := time.Now()
+	tmpKey := fmt.Sprintf("article:leaderboard:merge:%s:%d", actionType, now.UnixNano())
+	if err := r.mergeWeeklyLeaderboard(ctx, actionType, tmpKey, now); err != nil {
+		return err
+	}
+	defer func() { _ = r.client.Del(ctx, tmpKey).Err() }()
 
-	items, err := r.client.ZRevRangeWithScores(ctx, leaderboardKey, 0, topN-1).Result()
+	items, err := r.client.ZRevRangeWithScores(ctx, tmpKey, 0, topN-1).Result()
 	if err != nil {
 		return err
 	}
@@ -420,4 +480,42 @@ func newLockToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// --- ArticleCollection 缓存 ---
+
+func (r *RedisArticleRepository) GetUserCollectionList(userID uint64) ([]*models.ArticleCollection, bool, error) {
+	if r == nil || r.client == nil {
+		return nil, false, nil
+	}
+	val, err := r.client.Get(ctx, fmt.Sprintf("article:col:list:%d", userID)).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	var list []*models.ArticleCollection
+	if err := json.Unmarshal([]byte(val), &list); err != nil {
+		return nil, false, err
+	}
+	return list, true, nil
+}
+
+func (r *RedisArticleRepository) SetUserCollectionList(userID uint64, list []*models.ArticleCollection) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	body, err := json.Marshal(list)
+	if err != nil {
+		return err
+	}
+	return r.client.Set(ctx, fmt.Sprintf("article:col:list:%d", userID), body, articleCacheTTL).Err()
+}
+
+func (r *RedisArticleRepository) DeleteUserCollectionList(userID uint64) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	return r.client.Del(ctx, fmt.Sprintf("article:col:list:%d", userID)).Err()
 }

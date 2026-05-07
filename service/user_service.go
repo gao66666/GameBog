@@ -13,14 +13,16 @@ import (
 )
 
 type UserService struct {
-	userRepo  *database.UserRepository
-	redisRepo *database.RedisUserRepository
+	userRepo   *database.UserRepository
+	followRepo *database.FollowRepository
+	redisRepo  *database.RedisUserRepository
 }
 
-func NewUserService(dataRepo *database.UserRepository, rs *database.RedisUserRepository) *UserService {
+func NewUserService(dataRepo *database.UserRepository, rs *database.RedisUserRepository, followRepo *database.FollowRepository) *UserService {
 	return &UserService{
-		userRepo:  dataRepo,
-		redisRepo: rs,
+		userRepo:   dataRepo,
+		followRepo: followRepo,
+		redisRepo:  rs,
 	}
 }
 
@@ -61,10 +63,11 @@ func (se *UserService) SignUp(param models.ParamSignUp) (uint64, error) {
 	id := tool.GenerateID()
 
 	newUser := &models.User{
-		ID:       id,
-		Name:     param.Username,
-		Tel:      param.Tel,
-		Password: param.Password,
+		ID:             id,
+		Name:           param.Username,
+		Tel:            param.Tel,
+		Password:       param.Password,
+		AccountBalance: 500,
 	}
 	//对密码进行哈希处理
 	if err := newUser.HashPassword(); err != nil {
@@ -102,6 +105,74 @@ func (se *UserService) UpdateUser(userID uint64, data map[string]interface{}) er
 
 func (se *UserService) GetUserByID(userID uint64) (*models.User, error) {
 	return se.userRepo.GetUserByID(userID)
+}
+
+// GetAccountBalance 账户余额：始终读 MySQL，不使用 Redis。
+func (se *UserService) GetAccountBalance(userID uint64) (int64, error) {
+	if userID == 0 {
+		return 0, ErrUserNotFound
+	}
+	u, err := se.userRepo.GetUserByID(userID)
+	if err != nil {
+		return 0, err
+	}
+	return u.AccountBalance, nil
+}
+
+func (se *UserService) loadSocialStatsFromDB(userID uint64) (followingUsers int64, followers int64, err error) {
+	if userID == 0 {
+		return 0, 0, nil
+	}
+	if se.followRepo == nil {
+		u, e := se.userRepo.GetUserByID(userID)
+		if e != nil {
+			return 0, 0, e
+		}
+		return 0, int64(u.FollowingCount), nil
+	}
+	followingUsers, err = se.followRepo.CountFollowingUsers(userID)
+	if err != nil {
+		return 0, 0, err
+	}
+	u, err := se.userRepo.GetUserByID(userID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return followingUsers, int64(u.FollowingCount), nil
+}
+
+// GetSocialStatsCached 返回「关注用户数」与「粉丝数」；优先 Redis user:social_stats，miss 则查库并回填。
+func (se *UserService) GetSocialStatsCached(userID uint64) (followingUsers int64, followers int64, err error) {
+	if userID == 0 {
+		return 0, 0, nil
+	}
+	if se.redisRepo != nil {
+		if s, ok, e := se.redisRepo.GetUserSocialStats(userID); e == nil && ok && s != nil {
+			return s.FollowingUsers, s.Followers, nil
+		}
+	}
+	fu, fo, err := se.loadSocialStatsFromDB(userID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if se.redisRepo != nil {
+		_ = se.redisRepo.SetUserSocialStats(userID, fu, fo)
+	}
+	return fu, fo, nil
+}
+
+// GetFollowingUsersCountCached 我关注的用户人数（带 Redis 缓存）。
+func (se *UserService) GetFollowingUsersCountCached(userID uint64) (int64, error) {
+	fu, _, err := se.GetSocialStatsCached(userID)
+	return fu, err
+}
+
+// InvalidateUserSocialStats 删除社交统计缓存（发文、关注/被关注后调用，下次读取重算）。
+func (se *UserService) InvalidateUserSocialStats(userID uint64) {
+	if se.redisRepo == nil || userID == 0 {
+		return
+	}
+	_ = se.redisRepo.DelUserSocialStats(userID)
 }
 
 // GetUserBaseCached 用于个人中心：优先读 Redis，miss 再读 DB 并回填缓存。

@@ -15,6 +15,7 @@ type User struct {
 	Avatar         string `gorm:"column:avatar"`          // 头像链接
 	Github         string `gorm:"column:github;size:255"` // GitHub 主页链接
 	FollowingCount uint64 `gorm:"column:following_count"` // 被多少人关注
+	AccountBalance int64  `gorm:"column:account_balance;not null;default:500" json:"accountBalance"` // 账户余额（整数，默认 500；不走 Redis）
 	CreatedAt      time.Time
 }
 

@@ -1,24 +1,45 @@
 (function () {
     const { qs, api, getAuth } = window.GoBlog;
 
+    const CY_MARK = '👁 ';
+    const CY_MAX_LEN = 200;
+    const COMMENT_MAX_LEN = 500;
+
     let currentViewCount = 0;
     let currentLikeCount = 0;
     let currentCommentCount = 0;
     let currentArticleData = null;
+    let currentParentId = '0';
+    let pendingCY = false;
+    let cyFloatTimer = null;
+    let isCollected = false;
 
-    function pageEl() { return document.getElementById('page'); }
+    function pageEl() {
+        return document.getElementById('page');
+    }
 
     function getArticleId() {
         const el = pageEl();
         return (el && el.getAttribute('data-article-id')) || '';
     }
 
-    function renderMeta(d, id) {
+    function setActionHint(text) {
+        const el = qs('actionHint');
+        if (el) el.textContent = text || '';
+    }
+
+    function updateLikeBadge() {
+        const el = qs('likeCount');
+        if (el) el.textContent = String(currentLikeCount);
+    }
+
+    function renderMeta(d) {
         if (!d) return;
         const view = d && (d.view_count ?? d.viewCount ?? currentViewCount ?? 0);
         const like = d && (d.like_count ?? d.likeCount ?? currentLikeCount ?? 0);
         currentViewCount = Number(view) || 0;
         currentLikeCount = Number(like) || 0;
+        updateLikeBadge();
 
         const created = d && (d.created_at || d.createdAt || '');
         const metaEl = qs('articleMeta');
@@ -29,11 +50,16 @@
             : '';
 
         metaEl.innerHTML = [
-            '<span class="stat"><span class="stat-icon" aria-hidden="true">👁</span>' + currentViewCount + '</span>',
+            '<span class="stat"><span class="stat-icon" aria-hidden="true">阅读</span>' + currentViewCount + '</span>',
             '<span class="stat"><span class="stat-icon" aria-hidden="true">👍</span>' + currentLikeCount + '</span>',
             commentPart,
-            created ? '<span class="stat">发布时间 ' + created + '</span>' : ''
-        ].filter(Boolean).join(' · ');
+            created ? '<span class="stat">' + escapeHtml(created) + '</span>' : ''
+        ].filter(Boolean).join('');
+
+        const cc = qs('commentCount');
+        if (cc) {
+            cc.textContent = currentCommentCount > 0 ? '· ' + currentCommentCount + ' 条' : '';
+        }
     }
 
     function renderTags(d) {
@@ -54,7 +80,7 @@
             const name = String((t && (t.name || t.Name)) || '').trim();
             if (!name) return;
             const chip = document.createElement('span');
-            chip.className = 'tag-chip';
+            chip.className = 'tag';
             chip.textContent = '#' + name;
             root.appendChild(chip);
         });
@@ -144,7 +170,6 @@
 
         const renderer = new m.Renderer();
 
-        // 安全：将内联 HTML 当作纯文本展示
         renderer.html = function (html) {
             if (html && typeof html === 'object') {
                 return escapeHtml(html.text || '');
@@ -152,7 +177,6 @@
             return escapeHtml(html);
         };
 
-        // 兼容 marked 新旧版本的 code token
         renderer.code = function (code, infostring) {
             let codeText = '';
             let lang = '';
@@ -178,7 +202,6 @@
                 });
                 window.__goblog_marked_inited = true;
             } else {
-                // 保险：确保 renderer 生效
                 m.setOptions({ renderer });
             }
             return m.parse(String(text || ''));
@@ -194,7 +217,6 @@
         let s = String(text || '').trim().toLowerCase();
         if (!s) return '';
         s = s.replace(/\s+/g, '-');
-        // 允许中文、字母数字、下划线、短横线；其余去掉
         s = s.replace(/[^\w\u4e00-\u9fa5\-]+/g, '');
         s = s.replace(/\-+/g, '-');
         s = s.replace(/^\-+|\-+$/g, '');
@@ -214,7 +236,6 @@
             return;
         }
 
-        // 为标题补齐稳定 id（避免点击目录无法跳转）
         const used = Object.create(null);
         headings.forEach((h, idx) => {
             const level = Number(String(h.tagName || '').replace(/^H/i, '')) || 1;
@@ -229,7 +250,6 @@
                 id = 'h-' + (idx + 1);
             }
 
-            // 去重
             const base = id;
             let n = used[base] || 0;
             while (document.getElementById(id)) {
@@ -250,22 +270,68 @@
         tocCard.style.display = '';
     }
 
-    // 当前回复的父评论ID（"0" 表示直接评论文章）
-    let currentParentId = '0';
-
     function setReplyTarget(parentId, userName) {
         currentParentId = String(parentId || '0');
-        const msg = qs('commentMsg');
-        if (!msg) return;
-        if (currentParentId === '0') {
-            msg.textContent = '';
+        const hint = qs('replyHint');
+        if (hint) {
+            if (currentParentId === '0') {
+                hint.innerHTML = '';
+            } else {
+                hint.innerHTML = '回复 <strong>' + escapeHtml(userName || '') + '</strong> · <button type="button" id="cancelReplyBtn">取消</button>';
+                const cancel = qs('cancelReplyBtn');
+                if (cancel) {
+                    cancel.onclick = function () {
+                        setReplyTarget('0', '');
+                    };
+                }
+            }
+        }
+
+        if (currentParentId !== '0') {
+            pendingCY = false;
+            syncCYUI();
+        }
+
+        const input = qs('commentInput');
+        if (input) input.focus();
+    }
+
+    function syncCYUI() {
+        const hint = qs('cyModeHint');
+        if (hint) {
+            hint.style.display = pendingCY ? '' : 'none';
+        }
+        const host = qs('commentEditorHost');
+        const { token } = getAuth();
+        const canCY = !!(token && currentParentId === '0');
+        if (host) {
+            host.classList.toggle('cy-disabled', !canCY);
+        }
+        const btn = qs('cyInsertBtn');
+        if (btn) {
+            btn.disabled = !canCY;
+        }
+    }
+
+    function showCyFloat(show) {
+        const host = qs('commentEditorHost');
+        if (!host) return;
+        if (show) {
+            host.classList.add('cy-float-visible');
         } else {
-            msg.textContent = '回复 ' + (userName || '') + ' 中，提交后会作为该评论的回复。';
+            host.classList.remove('cy-float-visible');
         }
-        const form = qs('commentForm');
-        if (form && form.content) {
-            form.content.focus();
-        }
+    }
+
+    function scheduleHideCyFloat() {
+        if (cyFloatTimer) clearTimeout(cyFloatTimer);
+        cyFloatTimer = setTimeout(function () {
+            const input = qs('commentInput');
+            const active = document.activeElement;
+            if (active !== input) {
+                showCyFloat(false);
+            }
+        }, 220);
     }
 
     function fmtTime(iso) {
@@ -276,8 +342,30 @@
         } catch { return ''; }
     }
 
-    function renderComments(list) {
-        const root = qs('comments');
+    function updateCharCount() {
+        const input = qs('commentInput');
+        const el = qs('commentCharCount');
+        if (!input || !el) return;
+        const n = (input.value || '').length;
+        const max = pendingCY ? CY_MAX_LEN : COMMENT_MAX_LEN;
+        el.textContent = n + ' / ' + max;
+        el.style.color = n > max ? '#c00' : '';
+    }
+
+    function insertAtCursor(textarea, text) {
+        const start = textarea.selectionStart || 0;
+        const end = textarea.selectionEnd || 0;
+        const v = textarea.value || '';
+        textarea.value = v.slice(0, start) + text + v.slice(end);
+        const pos = start + text.length;
+        textarea.selectionStart = textarea.selectionEnd = pos;
+    }
+
+    function renderCommentTree(list) {
+        const root = qs('commentList');
+        const empty = qs('commentEmpty');
+        if (!root) return;
+
         root.innerHTML = '';
 
         const auth = getAuth();
@@ -285,191 +373,119 @@
         const hasLogin = auth && auth.token;
 
         if (!list || !list.length) {
-            const empty = document.createElement('div');
-            empty.className = 'muted';
-            empty.textContent = '暂无评论';
-            root.appendChild(empty);
+            if (empty) {
+                empty.textContent = '暂无评论，来抢沙发吧';
+                empty.style.display = '';
+            }
             return;
         }
+        if (empty) empty.style.display = 'none';
 
         list.forEach((c, index) => {
-            const box = document.createElement('div');
-            box.className = 'item';
-
-            const header = document.createElement('div');
-            header.className = 'row';
-            header.style.justifyContent = 'space-between';
-            const userName = (c.user && c.user.userName) ? c.user.userName : '匿名';
-            const floorNo = index + 1;
-            const createdRaw = c.createdAt || c.created_at || '';
-            const createdText = createdRaw ? (fmtTime(createdRaw) || createdRaw) : '';
-
-            const leftHead = document.createElement('div');
-            leftHead.style.display = 'flex';
-            leftHead.style.alignItems = 'center';
-            leftHead.style.gap = '8px';
-            const nameSpan = document.createElement('span');
-            nameSpan.textContent = userName;
-            leftHead.appendChild(nameSpan);
-
-            const replyBtn = document.createElement('button');
-            replyBtn.type = 'button';
-            replyBtn.className = 'linklike';
-            replyBtn.textContent = '↩';
-            replyBtn.title = '回复';
-            replyBtn.setAttribute('aria-label', '回复');
-            replyBtn.onclick = function () {
-                setReplyTarget(c.id, userName);
-            };
-            leftHead.appendChild(replyBtn);
-
-            const commentOwnerId = c && c.user && c.user.userId ? String(c.user.userId) : '';
-            if (hasLogin && currentUserId && commentOwnerId && currentUserId === commentOwnerId) {
-                const delBtn = document.createElement('button');
-                delBtn.type = 'button';
-                delBtn.className = 'linklike';
-                delBtn.setAttribute('aria-label', '删除评论');
-                delBtn.textContent = '🗑';
-                delBtn.onclick = async function () {
-                    const ok = confirm('确定删除这条评论吗？');
-                    if (!ok) return;
-                    const msg = qs('commentMsg');
-                    if (msg) msg.textContent = '';
-                    try {
-                        await api('/api/v1/articles/comments/' + encodeURIComponent(String(c.id)), { method: 'DELETE' });
-                        if (msg) msg.textContent = '已删除';
-                        await loadComments();
-                    } catch (e) {
-                        if (msg) msg.textContent = '删除失败：' + e.message;
-                    }
-                };
-                leftHead.appendChild(delBtn);
-            }
-
-            const rightHead = document.createElement('div');
-            rightHead.className = 'muted';
-            rightHead.textContent = floorNo + '楼';
-
-            header.appendChild(leftHead);
-            header.appendChild(rightHead);
-
-            const contentRow = document.createElement('div');
-            contentRow.className = 'row';
-            contentRow.style.justifyContent = 'space-between';
-            contentRow.style.alignItems = 'flex-start';
-            contentRow.style.gap = '12px';
-
-            const content = document.createElement('div');
-            content.style.flex = '1 1 auto';
-            content.style.minWidth = '0';
-            content.textContent = c.content || '';
-
-            const time = document.createElement('div');
-            time.className = 'muted';
-            time.style.flex = '0 0 auto';
-            time.style.whiteSpace = 'nowrap';
-            time.textContent = createdText;
-
-            contentRow.appendChild(content);
-            if (createdText) contentRow.appendChild(time);
-
-            box.appendChild(header);
-            box.appendChild(contentRow);
-
-            if (c.children && c.children.length) {
-                const ul = document.createElement('ul');
-                ul.className = 'list';
-                c.children.forEach((child) => {
-                    const li = document.createElement('li');
-                    const u = (child.user && child.user.userName) ? child.user.userName : '匿名';
-                    const ru = child.replyUser && child.replyUser.userName ? child.replyUser.userName : '';
-                    const childCreatedRaw = child.createdAt || child.created_at || '';
-                    const childCreatedText = childCreatedRaw ? (fmtTime(childCreatedRaw) || childCreatedRaw) : '';
-
-                    const row1 = document.createElement('div');
-                    row1.className = 'row';
-                    row1.style.justifyContent = 'space-between';
-
-                    const row1Left = document.createElement('div');
-                    row1Left.style.display = 'flex';
-                    row1Left.style.alignItems = 'center';
-                    row1Left.style.gap = '8px';
-
-                    const name = document.createElement('span');
-                    name.textContent = ru ? (u + ' 回复 ' + ru) : u;
-                    row1Left.appendChild(name);
-
-                    const replyLink = document.createElement('button');
-                    replyLink.type = 'button';
-                    replyLink.className = 'linklike';
-                    replyLink.textContent = '↩';
-                    replyLink.title = '回复';
-                    replyLink.setAttribute('aria-label', '回复');
-                    replyLink.onclick = function () {
-                        setReplyTarget(child.id, u);
-                    };
-
-                    row1Left.appendChild(replyLink);
-
-                    const childOwnerId = child && child.user && child.user.userId ? String(child.user.userId) : '';
-                    if (hasLogin && currentUserId && childOwnerId && currentUserId === childOwnerId) {
-                        const delChildBtn = document.createElement('button');
-                        delChildBtn.type = 'button';
-                        delChildBtn.className = 'linklike';
-                        delChildBtn.setAttribute('aria-label', '删除评论');
-                        delChildBtn.textContent = '🗑';
-                        delChildBtn.onclick = async function () {
-                            const ok = confirm('确定删除这条评论吗？');
-                            if (!ok) return;
-                            const msg = qs('commentMsg');
-                            if (msg) msg.textContent = '';
-                            try {
-                                await api('/api/v1/articles/comments/' + encodeURIComponent(String(child.id)), { method: 'DELETE' });
-                                if (msg) msg.textContent = '已删除';
-                                await loadComments();
-                            } catch (e) {
-                                if (msg) msg.textContent = '删除失败：' + e.message;
-                            }
-                        };
-                        row1Left.appendChild(delChildBtn);
-                    }
-
-                    const row1Right = document.createElement('div');
-                    row1Right.className = 'muted';
-                    row1Right.textContent = '';
-
-                    row1.appendChild(row1Left);
-                    row1.appendChild(row1Right);
-
-                    const row2 = document.createElement('div');
-                    row2.className = 'row';
-                    row2.style.justifyContent = 'space-between';
-                    row2.style.alignItems = 'flex-start';
-                    row2.style.gap = '12px';
-
-                    const childContent = document.createElement('div');
-                    childContent.style.flex = '1 1 auto';
-                    childContent.style.minWidth = '0';
-                    childContent.textContent = child.content || '';
-
-                    const childTime = document.createElement('div');
-                    childTime.className = 'muted';
-                    childTime.style.flex = '0 0 auto';
-                    childTime.style.whiteSpace = 'nowrap';
-                    childTime.textContent = childCreatedText;
-
-                    row2.appendChild(childContent);
-                    if (childCreatedText) row2.appendChild(childTime);
-
-                    li.appendChild(row1);
-                    li.appendChild(row2);
-                    ul.appendChild(li);
-                });
-                box.appendChild(ul);
-            }
-
-            root.appendChild(box);
+            root.appendChild(buildCommentNode(c, index + 1, hasLogin, currentUserId, false, ''));
         });
+    }
+
+    function buildCommentNode(c, floorNo, hasLogin, currentUserId, isChild, replyToName) {
+        const ctype = String((c.commentType || c.comment_type || 'comment')).toLowerCase();
+        const isCY = ctype === 'cy';
+
+        const box = document.createElement('div');
+        box.className = 'comment-item' + (isCY ? ' comment-item--cy' : '');
+        if (isChild) {
+            box.classList.add('comment-child');
+        }
+
+        const header = document.createElement('div');
+        header.className = 'comment-header';
+
+        const av = document.createElement('div');
+        av.className = 'comment-avatar';
+        const uname = (c.user && c.user.userName) ? c.user.userName : '匿';
+        av.textContent = uname.slice(0, 1);
+
+        const nameWrap = document.createElement('div');
+        nameWrap.style.display = 'flex';
+        nameWrap.style.alignItems = 'center';
+        nameWrap.style.gap = '8px';
+        nameWrap.style.flexWrap = 'wrap';
+
+        const userSpan = document.createElement('span');
+        userSpan.className = 'comment-user';
+        const baseName = (c.user && c.user.userName) ? c.user.userName : '匿名';
+        if (isChild && replyToName) {
+            userSpan.textContent = baseName + ' → ' + replyToName;
+        } else {
+            userSpan.textContent = baseName;
+        }
+
+        nameWrap.appendChild(userSpan);
+
+        if (isCY) {
+            const badge = document.createElement('span');
+            badge.className = 'comment-badge';
+            badge.textContent = 'CY';
+            nameWrap.appendChild(badge);
+        }
+
+        const replyBtn = document.createElement('button');
+        replyBtn.type = 'button';
+        replyBtn.textContent = '回复';
+        replyBtn.style.cssText = 'background:none;border:none;font-size:12px;color:#0071e3;cursor:pointer;padding:0;margin-left:4px;';
+        replyBtn.onclick = function () {
+            setReplyTarget(c.id, baseName);
+        };
+
+        const commentOwnerId = c && c.user && c.user.userId ? String(c.user.userId) : '';
+        if (hasLogin && currentUserId && commentOwnerId && currentUserId === commentOwnerId) {
+            const delBtn = document.createElement('button');
+            delBtn.type = 'button';
+            delBtn.textContent = '删除';
+            delBtn.style.cssText = 'background:none;border:none;font-size:12px;color:#86868b;cursor:pointer;padding:0;margin-left:8px;';
+            delBtn.onclick = async function () {
+                if (!confirm('确定删除这条评论吗？')) return;
+                const msg = qs('commentMsg');
+                if (msg) msg.textContent = '';
+                try {
+                    await api('/api/v1/articles/comments/' + encodeURIComponent(String(c.id)), { method: 'DELETE' });
+                    if (msg) msg.textContent = '已删除';
+                    await loadComments();
+                } catch (e) {
+                    if (msg) msg.textContent = '删除失败：' + e.message;
+                }
+            };
+            nameWrap.appendChild(delBtn);
+        }
+
+        nameWrap.appendChild(replyBtn);
+
+        const time = document.createElement('span');
+        time.className = 'comment-time';
+        const createdRaw = c.createdAt || c.created_at || '';
+        time.textContent = fmtTime(createdRaw) || createdRaw || (floorNo && !isChild ? floorNo + ' 楼' : '');
+
+        header.appendChild(av);
+        header.appendChild(nameWrap);
+        header.appendChild(time);
+
+        const contentEl = document.createElement('div');
+        contentEl.className = 'comment-content';
+        contentEl.textContent = c.content || '';
+
+        box.appendChild(header);
+        box.appendChild(contentEl);
+
+        if (c.children && c.children.length) {
+            const wrap = document.createElement('div');
+            wrap.className = 'comment-children';
+            c.children.forEach((child) => {
+                const ru = child.replyUser && child.replyUser.userName ? child.replyUser.userName : '';
+                wrap.appendChild(buildCommentNode(child, 0, hasLogin, currentUserId, true, ru || ''));
+            });
+            box.appendChild(wrap);
+        }
+
+        return box;
     }
 
     async function loadArticle() {
@@ -478,52 +494,57 @@
         const d = resp && resp.data;
         currentArticleData = d;
 
+        isCollected = !!(d && (d.is_collected === true || d.isCollected === true));
+
         setText('articleTitle', d.title || ('文章 ' + id));
-        renderMeta(d, id);
+        renderMeta(d);
         renderTags(d);
+        const coverEl = qs('articleCoverWrap');
+        const coverImg = qs('articleCoverImg');
+        const cu = String((d && (d.cover_url || d.coverUrl)) || '').trim();
+        if (coverEl && coverImg && cu) {
+            coverImg.src = cu;
+            coverImg.alt = (d.title || '封面') + '';
+            coverEl.hidden = false;
+        } else if (coverEl) {
+            coverEl.hidden = true;
+        }
         const contentEl = qs('articleContent');
         if (contentEl) {
-            // 与编辑器预览保持一致：优先用 marked 在前端渲染 Markdown
             const md = d.content || '';
             const html = renderMarkdown(md);
             if (html) {
                 contentEl.innerHTML = html;
             } else if (d.html_content) {
-                // 兜底：后端已渲染的 HTML
                 contentEl.innerHTML = d.html_content;
             } else {
                 contentEl.textContent = md;
             }
-
-            // 生成目录（基于渲染后的 HTML 标题）
             buildTOCFromContent(contentEl);
-
-            // 代码高亮
             applyHighlight(contentEl);
         }
 
-        // 作者信息
         try {
-            await loadAuthor(d.author_id);
+            await loadAuthor(d.author_id || d.authorId);
         } catch (e) {
-            setText('authorInfo', '作者信息加载失败：' + e.message);
+            setText('authorExtra', '作者信息加载失败');
         }
 
-        // 点赞按钮初始化（需要登录）
         setupLikeButton(d);
+        setupCollectButton();
+        updateCollectButton();
     }
 
     function setupLikeButton(articleData) {
         const btn = qs('likeBtn');
-        const msg = qs('likeMsg');
-        if (!btn || !msg) return;
+        if (!btn) return;
 
         const { token } = getAuth();
-        msg.textContent = '';
+        setActionHint('');
 
         if (!token) {
             btn.disabled = true;
-            btn.title = '点赞（需登录）';
+            btn.title = '登录后可点赞';
             return;
         }
 
@@ -534,24 +555,70 @@
             if (!articleId) return;
 
             btn.disabled = true;
-            msg.textContent = '';
+            setActionHint('');
 
-            // 前端先乐观 +1 展示
             const prevLike = currentLikeCount;
             currentLikeCount = prevLike + 1;
-            renderMeta({ like_count: currentLikeCount, view_count: currentViewCount, author_id: articleData.author_id, created_at: articleData.created_at }, articleId);
+            renderMeta(Object.assign({}, articleData, { like_count: currentLikeCount, view_count: currentViewCount }));
 
             try {
                 await api('/api/v1/articles/like', {
                     method: 'POST',
                     body: JSON.stringify({ article_id: String(articleId), is_cancel: false })
                 });
-                msg.textContent = '已点赞';
+                setActionHint('已点赞');
             } catch (e) {
-                // 请求失败，回滚展示
                 currentLikeCount = prevLike;
-                renderMeta({ like_count: currentLikeCount, view_count: currentViewCount, author_id: articleData.author_id, created_at: articleData.created_at }, articleId);
-                msg.textContent = '点赞失败：' + e.message;
+                renderMeta(Object.assign({}, articleData, { like_count: currentLikeCount, view_count: currentViewCount }));
+                setActionHint('点赞失败：' + e.message);
+            } finally {
+                btn.disabled = false;
+            }
+        };
+    }
+
+    function updateCollectButton() {
+        const btn = qs('collectBtn');
+        if (!btn) return;
+        btn.classList.toggle('active', isCollected);
+        btn.title = isCollected ? '已收藏，点击取消' : '收藏';
+    }
+
+    function setupCollectButton() {
+        const btn = qs('collectBtn');
+        if (!btn) return;
+
+        const { token } = getAuth();
+        if (!token) {
+            btn.disabled = true;
+            btn.title = '登录后可收藏';
+            return;
+        }
+
+        btn.disabled = false;
+        btn.onclick = async function () {
+            const articleId = getArticleId();
+            if (!articleId) return;
+            btn.disabled = true;
+            try {
+                if (isCollected) {
+                    await api('/api/v1/articles/collect', {
+                        method: 'DELETE',
+                        body: JSON.stringify({ articleId: String(articleId) })
+                    });
+                    isCollected = false;
+                    setActionHint('已取消收藏');
+                } else {
+                    await api('/api/v1/articles/collect', {
+                        method: 'POST',
+                        body: JSON.stringify({ articleId: String(articleId) })
+                    });
+                    isCollected = true;
+                    setActionHint('已加入收藏');
+                }
+                updateCollectButton();
+            } catch (e) {
+                setActionHint('收藏操作失败：' + e.message);
             } finally {
                 btn.disabled = false;
             }
@@ -559,10 +626,14 @@
     }
 
     async function loadAuthor(authorId) {
+        const avatarEl = qs('authorAvatar');
+        const nameEl = qs('authorName');
+        const extraEl = qs('authorExtra');
+
         if (!authorId) {
-            setText('authorInfo', '作者：-');
-            setText('sideAuthorName', '-');
-            // 清空右侧链接
+            if (avatarEl) { avatarEl.textContent = '?'; avatarEl.innerHTML = '?'; }
+            if (nameEl) nameEl.textContent = '-';
+            if (extraEl) extraEl.textContent = '';
             const home = qs('sideHomeLink');
             const github = qs('sideGithubLink');
             const mail = qs('sideMailLink');
@@ -571,45 +642,48 @@
             if (mail) mail.href = '#';
             return;
         }
+
         const resp = await api('/api/v1/users/' + encodeURIComponent(authorId));
         const u = resp && resp.data;
         const name = (u && (u.user_name || u.userName)) || '-';
+        const uid = String((u && (u.user_id || u.userId)) || authorId);
 
-        const authorEl = qs('authorInfo');
-        if (authorEl) {
-            const uid = String((u && (u.user_id || u.userId)) || authorId);
-            authorEl.innerHTML = '作者：<a href="/u/' + encodeURIComponent(uid) + '">' + String(name) + '</a>';
+        if (nameEl) {
+            nameEl.innerHTML = '<a href="/u/' + encodeURIComponent(uid) + '">' + escapeHtml(name) + '</a>';
+        }
+        if (extraEl) {
+            extraEl.textContent = u && u.tel ? '用户 · 已验证' : '作者';
         }
 
-        // 右侧栏填充
+        if (avatarEl) {
+            const av = u && (u.avatar || u.Avatar);
+            if (av && String(av).trim()) {
+                avatarEl.innerHTML = '<img src="' + escapeHtml(String(av).trim()) + '" alt="" loading="lazy" referrerpolicy="no-referrer" />';
+            } else {
+                avatarEl.textContent = name.slice(0, 1) || '?';
+            }
+        }
+
         setText('sideAuthorName', name);
         const home = qs('sideHomeLink');
         const github = qs('sideGithubLink');
         const mail = qs('sideMailLink');
-        const uid = String((u && (u.user_id || u.userId)) || authorId);
         if (home) home.href = '/u/' + encodeURIComponent(uid);
         bindGithubLink(github, u && (u.github || u.github_url || u.githubUrl));
-        if (mail) {
-            // 假设有私信页 /dm?to=uid
-            mail.href = '/dm?to=' + encodeURIComponent(uid);
-        }
+        if (mail) mail.href = '/dm?to=' + encodeURIComponent(uid);
 
-        setupFollowButton(String((u && (u.user_id || u.userId)) || authorId));
+        setupFollowButton(uid);
     }
 
     function setupFollowButton(followingId) {
         const btn = qs('followBtn');
-        const msg = qs('followMsg');
-        msg.textContent = '';
         if (!btn) return;
 
         const { token, userId } = getAuth();
-        // 未登录：隐藏按钮
         if (!token) {
             btn.style.display = 'none';
             return;
         }
-        // 自己：不显示关注
         if (userId && String(userId) === String(followingId)) {
             btn.style.display = 'none';
             return;
@@ -617,19 +691,19 @@
 
         btn.style.display = '';
         btn.disabled = false;
-        btn.textContent = '关注';
+        btn.innerHTML = '<span aria-hidden="true">＋</span>';
+        btn.title = '关注作者';
         btn.onclick = async function () {
-            msg.textContent = '';
             btn.disabled = true;
             try {
                 await api('/api/v1/follow', {
                     method: 'POST',
                     body: JSON.stringify({ followingId: String(followingId) })
                 });
-                msg.textContent = '已关注';
-                btn.textContent = '已关注';
+                setActionHint('已关注作者');
+                btn.style.display = 'none';
             } catch (e) {
-                msg.textContent = '关注失败：' + e.message;
+                setActionHint('关注失败：' + e.message);
                 btn.disabled = false;
             }
         };
@@ -637,76 +711,165 @@
 
     async function loadComments() {
         const id = getArticleId();
-        const resp = await api('/api/v1/articles/comments?article_id=' + encodeURIComponent(id) + '&page=1&size=10&limit=2');
+        const resp = await api('/api/v1/articles/comments?article_id=' + encodeURIComponent(id) + '&page=1&size=50&limit=5');
         const data = resp && resp.data;
         const list = data && (data.list || data) || [];
-        renderComments(list);
+        renderCommentTree(list);
         const total = data && (typeof data.total === 'number' ? data.total : list.length);
         currentCommentCount = total || 0;
         if (currentArticleData) {
-            renderMeta(currentArticleData, id);
+            renderMeta(currentArticleData);
         }
     }
 
-    async function submitComment(ev) {
-        ev.preventDefault();
-
+    async function submitComment() {
         const id = getArticleId();
         const { token, userId } = getAuth();
         const msg = qs('commentMsg');
-        msg.textContent = '';
+        const input = qs('commentInput');
+        if (msg) msg.textContent = '';
 
         if (!token) {
-            msg.textContent = '请先登录再发表评论';
+            if (msg) msg.textContent = '请先登录再发表评论';
             return;
         }
 
-        const content = String(ev.target.content.value || '').trim();
+        const content = String((input && input.value) || '').trim();
         if (!content) {
-            msg.textContent = '评论不能为空';
+            if (msg) msg.textContent = '评论不能为空';
             return;
         }
+
+        const maxLen = (pendingCY && currentParentId === '0') ? CY_MAX_LEN : COMMENT_MAX_LEN;
+        if (content.length > maxLen) {
+            if (msg) msg.textContent = '内容过长（最多 ' + maxLen + ' 字）';
+            return;
+        }
+
+        const submitBtn = qs('commentSubmitBtn');
+        if (submitBtn) submitBtn.disabled = true;
 
         try {
-            await api('/api/v1/articles/comments', {
-                method: 'POST',
-                body: JSON.stringify({
-                    articleId: String(id),
-                    userId: String(userId || '0'),
-                    parentId: String(currentParentId || '0'),
-                    content
-                })
-            });
+            if (pendingCY && currentParentId === '0') {
+                await api('/api/v1/articles/comments/cy', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        articleId: String(id),
+                        content
+                    })
+                });
+                pendingCY = false;
+                syncCYUI();
+            } else {
+                await api('/api/v1/articles/comments', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        articleId: String(id),
+                        userId: String(userId || '0'),
+                        parentId: String(currentParentId || '0'),
+                        content
+                    })
+                });
+            }
 
-            ev.target.content.value = '';
+            if (input) input.value = '';
             setReplyTarget('0', '');
-            msg.textContent = '已发表';
+            if (msg) msg.textContent = '已发送';
+            updateCharCount();
             await loadComments();
         } catch (e) {
-            msg.textContent = '发表失败：' + e.message;
+            if (msg) msg.textContent = '发送失败：' + e.message;
+        } finally {
+            if (submitBtn) submitBtn.disabled = false;
         }
     }
 
+    function wireCommentComposer() {
+        const input = qs('commentInput');
+        const submitBtn = qs('commentSubmitBtn');
+        const cyBtn = qs('cyInsertBtn');
+        const host = qs('commentEditorHost');
+
+        if (submitBtn) {
+            submitBtn.addEventListener('click', function (e) {
+                e.preventDefault();
+                submitComment();
+            });
+        }
+
+        if (input) {
+            input.addEventListener('input', function () {
+                if (pendingCY && !(input.value || '').startsWith('👁')) {
+                    pendingCY = false;
+                    syncCYUI();
+                }
+                updateCharCount();
+            });
+            input.addEventListener('focus', function () {
+                if (cyFloatTimer) clearTimeout(cyFloatTimer);
+                const { token } = getAuth();
+                if (token && currentParentId === '0') {
+                    showCyFloat(true);
+                } else {
+                    showCyFloat(false);
+                }
+            });
+            input.addEventListener('blur', function () {
+                scheduleHideCyFloat();
+            });
+            input.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    submitComment();
+                }
+            });
+        }
+
+        if (cyBtn) {
+            cyBtn.addEventListener('mousedown', function (e) {
+                e.preventDefault();
+            });
+            cyBtn.addEventListener('click', function () {
+                if (!input || cyBtn.disabled) return;
+                insertAtCursor(input, CY_MARK);
+                pendingCY = true;
+                syncCYUI();
+                updateCharCount();
+                input.focus();
+            });
+        }
+
+        if (host) {
+            host.addEventListener('mousedown', function () {
+                if (cyFloatTimer) clearTimeout(cyFloatTimer);
+            });
+        }
+
+        syncCYUI();
+        updateCharCount();
+    }
+
     document.addEventListener('DOMContentLoaded', async function () {
-        const form = qs('commentForm');
-        form.addEventListener('submit', submitComment);
+        wireCommentComposer();
 
         try {
             await loadArticle();
         } catch (e) {
             setText('articleTitle', '加载失败');
-            setText('articleContent', e.message);
+            const c = qs('articleContent');
+            if (c) c.textContent = e.message || String(e);
         }
 
         try {
             await loadComments();
         } catch (e) {
-            const root = qs('comments');
-            root.innerHTML = '';
-            const t = document.createElement('div');
-            t.className = 'muted';
-            t.textContent = '评论加载失败：' + e.message;
-            root.appendChild(t);
+            const root = qs('commentList');
+            const empty = qs('commentEmpty');
+            if (root) root.innerHTML = '';
+            if (empty) {
+                empty.style.display = '';
+                empty.textContent = '评论加载失败：' + (e.message || String(e));
+            }
         }
     });
 })();

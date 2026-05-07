@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -8,8 +9,20 @@ import (
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/tool"
 	"github.com/gin-gonic/gin"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
+
+func encodeGameTags(tags []string) datatypes.JSON {
+	if tags == nil {
+		tags = []string{}
+	}
+	b, err := json.Marshal(tags)
+	if err != nil {
+		return datatypes.JSON([]byte("[]"))
+	}
+	return datatypes.JSON(b)
+}
 
 func parseUint64Param(s string) (uint64, bool) {
 	v, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64)
@@ -59,13 +72,20 @@ func (h *GameHandler) CreateGame(c *gin.Context) {
 		tool.ResponseError(c, ErrCodeInvalidParam)
 		return
 	}
+	priceCents := int64(-1)
+	if p.PriceCents != nil {
+		priceCents = *p.PriceCents
+	}
 	game := &models.Game{
-		ID:          tool.GenerateID(),
-		Name:        p.Name,
-		Description: p.Description,
-		ReleaseAt:   releaseAt,
-		Publisher:   p.Publisher,
-		Developer:   p.Developer,
+		ID:           tool.GenerateID(),
+		Name:         p.Name,
+		Description:  p.Description,
+		ReleaseAt:    releaseAt,
+		Publisher:    p.Publisher,
+		Developer:    p.Developer,
+		CoverURL:     strings.TrimSpace(p.CoverURL),
+		PriceCents:   priceCents,
+		Tags:         encodeGameTags(p.Tags),
 	}
 	if err := h.se.CreateGame(game); err != nil {
 		tool.ResponseError(c, err)
@@ -104,6 +124,11 @@ func (h *GameHandler) UpdateGame(c *gin.Context) {
 	old.ReleaseAt = releaseAt
 	old.Publisher = p.Publisher
 	old.Developer = p.Developer
+	old.CoverURL = strings.TrimSpace(p.CoverURL)
+	if p.PriceCents != nil {
+		old.PriceCents = *p.PriceCents
+	}
+	old.Tags = encodeGameTags(p.Tags)
 	if err := h.se.UpdateGame(old); err != nil {
 		tool.ResponseError(c, err)
 		return
@@ -199,6 +224,11 @@ func (h *GameHandler) UpdateReview(c *gin.Context) {
 		tool.ResponseError(c, err)
 		return
 	}
+	uid := c.GetUint64("userID")
+	if review.UserID != uid {
+		tool.ResponseErrorWithMsg(c, "只能修改自己的点评")
+		return
+	}
 	review.Rating = p.Rating
 	review.Content = p.Content
 	review.ReviewedAt = time.Now()
@@ -213,6 +243,19 @@ func (h *GameHandler) DeleteReview(c *gin.Context) {
 	reviewID, ok := parseUint64Param(c.Param("id"))
 	if !ok {
 		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	rev, err := h.se.GetReviewByID(reviewID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			tool.ResponseErrorWithMsg(c, "点评不存在")
+			return
+		}
+		tool.ResponseError(c, err)
+		return
+	}
+	if rev.UserID != c.GetUint64("userID") {
+		tool.ResponseErrorWithMsg(c, "只能删除自己的点评")
 		return
 	}
 	if err := h.se.DeleteReview(reviewID); err != nil {
@@ -253,7 +296,36 @@ func (h *GameHandler) ListReviews(c *gin.Context) {
 		tool.ResponseError(c, err)
 		return
 	}
-	tool.ResponseSuccess(c, gin.H{"list": list, "total": total}, "查询成功")
+	nameCache := make(map[uint64]string)
+	out := make([]gin.H, 0, len(list))
+	for _, r := range list {
+		if r == nil {
+			continue
+		}
+		uname := ""
+		if h.userSe != nil {
+			if n, ok := nameCache[r.UserID]; ok {
+				uname = n
+			} else {
+				if u, err := h.userSe.GetUserBaseCached(r.UserID); err == nil && u != nil {
+					uname = u.Name
+				}
+				nameCache[r.UserID] = uname
+			}
+		}
+		out = append(out, gin.H{
+			"id":         strconv.FormatUint(r.ID, 10),
+			"gameId":     strconv.FormatUint(r.GameID, 10),
+			"userId":     strconv.FormatUint(r.UserID, 10),
+			"userName":   uname,
+			"rating":     r.Rating,
+			"content":    r.Content,
+			"reviewedAt": r.ReviewedAt,
+			"createdAt":  r.CreatedAt,
+			"updatedAt":  r.UpdatedAt,
+		})
+	}
+	tool.ResponseSuccess(c, gin.H{"list": out, "total": total}, "查询成功")
 }
 
 func (h *GameHandler) CreateReviewComment(c *gin.Context) {
@@ -301,6 +373,10 @@ func (h *GameHandler) UpdateReviewComment(c *gin.Context) {
 		tool.ResponseError(c, err)
 		return
 	}
+	if comment.UserID != c.GetUint64("userID") {
+		tool.ResponseErrorWithMsg(c, "只能修改自己的回复")
+		return
+	}
 	comment.Content = p.Content
 	if err := h.se.UpdateReviewComment(comment); err != nil {
 		tool.ResponseError(c, err)
@@ -313,6 +389,19 @@ func (h *GameHandler) DeleteReviewComment(c *gin.Context) {
 	commentID, ok := parseUint64Param(c.Param("id"))
 	if !ok {
 		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	cm, err := h.se.GetReviewCommentByID(commentID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			tool.ResponseErrorWithMsg(c, "回复不存在")
+			return
+		}
+		tool.ResponseError(c, err)
+		return
+	}
+	if cm.UserID != c.GetUint64("userID") {
+		tool.ResponseErrorWithMsg(c, "只能删除自己的回复")
 		return
 	}
 	if err := h.se.DeleteReviewComment(commentID); err != nil {
@@ -337,5 +426,81 @@ func (h *GameHandler) ListReviewComments(c *gin.Context) {
 	}
 	tool.ResponseSuccess(c, gin.H{"list": list, "total": total}, "查询成功")
 }
-	tool.ResponseSuccess(c, gin.H{"list": list, "total": total}, "查询成功")
+
+// --- UserGamePlay ---
+
+// UpsertMyGamePlay 新增/更新我的游戏记录
+func (h *GameHandler) UpsertMyGamePlay(c *gin.Context) {
+	var p models.ParamUpsertUserGamePlay
+	if err := c.ShouldBindJSON(&p); err != nil {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	gameID, ok := parseUint64Param(p.GameID)
+	if !ok {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	ugp := &models.UserGamePlay{
+		UserID:         c.GetUint64("userID"),
+		GameID:         gameID,
+		PlaytimeTotal:  p.PlaytimeTotal,
+		Playtime2Weeks: p.Playtime2Weeks,
+	}
+	if len(p.AchievedIDs) > 0 {
+		raw, _ := json.Marshal(p.AchievedIDs)
+		ugp.AchievedIDs = raw
+	}
+
+	if err := h.se.UpsertUserGamePlay(ugp); err != nil {
+		tool.ResponseError(c, err)
+		return
+	}
+	tool.ResponseSuccess(c, nil, "保存成功")
+}
+
+// GetMyGamePlays 获取我的游戏列表
+func (h *GameHandler) GetMyGamePlays(c *gin.Context) {
+	list, err := h.se.ListUserGamePlays(c.GetUint64("userID"))
+	if err != nil {
+		tool.ResponseError(c, err)
+		return
+	}
+	if list == nil {
+		list = []*models.UserGamePlay{}
+	}
+	tool.ResponseSuccess(c, gin.H{"list": list})
+}
+
+// GetUserGamePlays 获取公开的用户游戏列表
+func (h *GameHandler) GetUserGamePlays(c *gin.Context) {
+	userID, ok := parseUint64Param(c.Param("id"))
+	if !ok {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	list, err := h.se.ListUserGamePlays(userID)
+	if err != nil {
+		tool.ResponseError(c, err)
+		return
+	}
+	if list == nil {
+		list = []*models.UserGamePlay{}
+	}
+	tool.ResponseSuccess(c, gin.H{"list": list})
+}
+
+// DeleteMyGamePlay 删除我的游戏记录
+func (h *GameHandler) DeleteMyGamePlay(c *gin.Context) {
+	gameID, ok := parseUint64Param(c.Param("gameId"))
+	if !ok {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	if err := h.se.DeleteUserGamePlay(c.GetUint64("userID"), gameID); err != nil {
+		tool.ResponseError(c, err)
+		return
+	}
+	tool.ResponseSuccess(c, nil, "删除成功")
 }

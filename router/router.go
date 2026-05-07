@@ -28,17 +28,27 @@ type App struct {
 	DMHandler                *handler.DMHandler
 	TopicHandler             *handler.TopicHandler
 	GameHandler              *handler.GameHandler
+	PointsHandler            *handler.PointsHandler
+	PointsSvc                *service.PointsService
+	AgentHandler             *handler.AgentHandler
 }
 
 func (a *App) StartWorkers() {
 	if a.NotificationStoreHandler != nil {
 		a.NotificationStoreHandler.StartFlushTicks()
 	}
-	if err := mq.StartKafkaConsumers(a.NotificationHandler, a.NotificationStoreHandler, a.SearchHandler); err != nil {
+
+	var pointsProc mq.PointsSettleProcessor
+	if a.PointsSvc != nil {
+		pointsProc = a.PointsSvc
+		a.PointsSvc.StartOutboxScanner()
+	}
+
+	if err := mq.StartKafkaConsumers(a.NotificationHandler, a.NotificationStoreHandler, a.SearchHandler, pointsProc); err != nil {
 		zap.L().Warn("Kafka workers not started", zap.Error(err))
 		return
 	}
-	zap.L().Info("Kafka Worker 启动成功，正在监听【通知】【通知落库】与【搜索同步】Topic...")
+	zap.L().Info("Kafka Worker 启动成功，正在监听【通知】【通知落库】【搜索同步】【积分结算】Topic...")
 }
 
 // SetupApp 负责依赖注入的组装过程
@@ -59,6 +69,11 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	topicRepo := database.NewTopicRepository(db)
 	gameRepo := database.NewGameRepository(db)
 	gameRedis := database.NewRedisGameRepository(rdb)
+
+	pointsRepo := database.NewPointsRepository(db)
+	pointsRedis := database.NewRedisPointsRepository(rdb)
+	pointsSvc := service.NewPointsService(db, pointsRepo, pointsRedis)
+	pointsHandler := handler.NewPointsHandler(pointsSvc)
 
 	if err := userRepo.InitTable(); err != nil {
 		zap.L().Warn("用户表初始化失败", zap.Error(err))
@@ -84,11 +99,14 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	if err := gameRepo.InitTable(); err != nil {
 		zap.L().Warn("游戏相关表初始化失败", zap.Error(err))
 	}
+	if err := pointsRepo.InitTable(); err != nil {
+		zap.L().Warn("积分表初始化失败", zap.Error(err))
+	}
 
 	// 2. Service 层
-	userSvc := service.NewUserService(userRepo, userRedis)
-	articleSvc := service.NewArticleService(articleRepo, userRepo, commentRepo, followRepo, articleRedis, topicRepo, gameRepo)
-	followSvc := service.NewFollowService(followRepo, userRepo, followRedis)
+	userSvc := service.NewUserService(userRepo, userRedis, followRepo)
+	followSvc := service.NewFollowService(followRepo, userRepo, followRedis, topicRepo, userSvc)
+	articleSvc := service.NewArticleService(articleRepo, userRepo, commentRepo, followRepo, articleRedis, topicRepo, gameRepo, pointsSvc, userSvc)
 	dmSvc := service.NewDMService(dmRepo, userRepo, dmRedis)
 	topicSvc := service.NewTopicService(topicRepo, articleRepo)
 	gameSvc := service.NewGameService(gameRepo, gameRedis, topicRepo)
@@ -98,19 +116,28 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	notificationStoreHandler := handler.NewNotificationStoreHandler(notificationRepo)
 	dmHandler := handler.NewDMHandler(dmSvc, notificationHandler)
 
-	commentSvc := service.NewCommentService(commentRepo, articleRepo, userRepo, commentRedis, notificationRepo, notificationRedis, notificationHandler)
-	topicHandler := handler.NewTopicHandler(topicSvc)
+	commentSvc := service.NewCommentService(commentRepo, articleRepo, userRepo, commentRedis, notificationRepo, notificationRedis, notificationHandler, pointsSvc)
+	topicHandler := handler.NewTopicHandler(topicSvc, followSvc)
+
+	// Agent：短期对话在博客 Redis（与 Agent 侧 Redis 解耦）；WebSocket 仍直连 Agent
+	agentChatStore := database.NewRedisAgentChatStore(rdb)
+	agentHandler := handler.NewAgentHandler(agentChatStore)
+	notificationHandler.RouteAgentMessages(agentHandler)
+
 	return &App{
 		UserHandler:              handler.NewUserHandler(userSvc),
 		ArticleHandler:           handler.NewArticleHandler(articleSvc),
 		CommentHandler:           handler.NewCommentHandler(commentSvc),
-		FollowHandler:            handler.NewFollowHandler(followSvc),
+		FollowHandler:            handler.NewFollowHandler(followSvc, userSvc),
 		NotificationHandler:      notificationHandler,
 		NotificationStoreHandler: notificationStoreHandler,
 		SearchHandler:            handler.NewSearchHandler(articleRepo, userRepo, commentRepo),
 		DMHandler:                dmHandler,
 		TopicHandler:             topicHandler,
-		GameHandler:              handler.NewGameHandler(gameSvc),
+		GameHandler:              handler.NewGameHandler(gameSvc, userSvc),
+		PointsHandler:            pointsHandler,
+		PointsSvc:                pointsSvc,
+		AgentHandler:             agentHandler,
 	}
 }
 
@@ -134,6 +161,9 @@ func RouterInit(mode string, app *App) *gin.Engine {
 	// 页面模板与静态资源（最小前端）
 	r.LoadHTMLGlob("web/templates/*.tmpl")
 	r.Static("/static", "web/static")
+	r.GET("/favicon.ico", func(c *gin.Context) {
+		c.File("web/static/favicon.svg")
+	})
 
 	// 全局中间件：日志和异常恢复
 	r.Use(
@@ -159,6 +189,9 @@ func RouterInit(mode string, app *App) *gin.Engine {
 	r.GET("/topics", handler.TopicsPage)
 	r.GET("/topic/:id/discuss", handler.TopicDiscussPage)
 	r.GET("/topic/:id", handler.TopicPage)
+	r.GET("/agent", handler.AgentPage)
+	r.GET("/game-library", handler.GamesLibraryPage)
+	r.GET("/game/:id", handler.GameDetailPage)
 
 	r.GET("/healthz", handler.Healthz)
 	r.GET("/readyz", handler.Readyz)
@@ -204,6 +237,8 @@ func registerPublicRoutes(g *gin.RouterGroup, app *App) {
 	g.GET("/games/:id/reviews", app.GameHandler.ListReviews)
 	g.GET("/game-reviews/:id", app.GameHandler.GetReview)
 	g.GET("/game-reviews/:id/comments", app.GameHandler.ListReviewComments)
+	g.GET("/users/:id/points", app.PointsHandler.GetUserWallet)
+	g.GET("/users/:id/games", app.GameHandler.GetUserGamePlays)
 }
 
 func registerProtectedRoutes(g *gin.RouterGroup, app *App) {
@@ -213,6 +248,10 @@ func registerProtectedRoutes(g *gin.RouterGroup, app *App) {
 		authGroup.GET("/users/me", app.UserHandler.GetMe)
 		authGroup.POST("/users/update", app.UserHandler.UpdateUserHandle)
 		authGroup.POST("/follow", app.FollowHandler.CreateFollowAuth)
+		authGroup.POST("/follow/topic", app.FollowHandler.FollowTopicHandle)
+		authGroup.DELETE("/follow/topic", app.FollowHandler.UnfollowTopicHandle)
+		authGroup.GET("/follow/topics", app.FollowHandler.ListMyFollowedTopicsHandle)
+		authGroup.GET("/follow/users/count", app.FollowHandler.GetMyFollowingUserCount)
 		authGroup.GET("/dm/peers", app.DMHandler.ListPeers)
 		authGroup.GET("/dm/messages", app.DMHandler.ListMessages)
 		authGroup.POST("/dm/messages", app.DMHandler.SendMessage)
@@ -224,6 +263,18 @@ func registerProtectedRoutes(g *gin.RouterGroup, app *App) {
 		authGroup.GET("/articles", app.ArticleHandler.GetArticleListHandler)
 		authGroup.GET("/articles/following_latest", app.ArticleHandler.GetFollowingLatestArticles)
 		authGroup.POST("/articles/like", app.ArticleHandler.LikeArticleHandle)
+		authGroup.POST("/articles/comments/like", app.CommentHandler.LikeCommentHandle)
+		authGroup.POST("/articles/comments/cy", app.CommentHandler.CreateCYHandle)
+		authGroup.GET("/comments/cy", app.CommentHandler.GetMyCYListHandle)
+		authGroup.POST("/articles/collect", app.ArticleHandler.CollectArticleHandle)
+		authGroup.DELETE("/articles/collect", app.ArticleHandler.UncollectArticleHandle)
+		authGroup.GET("/articles/collect", app.ArticleHandler.ListMyCollectionsHandle)
+		authGroup.GET("/agent/sessions", app.AgentHandler.SessionsList)
+		authGroup.POST("/agent/sessions", app.AgentHandler.CreateAgentSession)
+		authGroup.DELETE("/agent/sessions/:id", app.AgentHandler.DeleteAgentSession)
+		authGroup.GET("/agent/history", app.AgentHandler.HistoryProxy)
+		authGroup.DELETE("/agent/history", app.AgentHandler.ClearChatHistory)
+		authGroup.POST("/agent/chat", app.AgentHandler.ChatProxy)
 		authGroup.DELETE("/articles/:id", app.ArticleHandler.DeleteArticleHandle)
 		authGroup.POST("/articles/comments", app.CommentHandler.CreateComment)
 		authGroup.DELETE("/articles/comments/:id", app.CommentHandler.DeleteComment)
@@ -240,5 +291,13 @@ func registerProtectedRoutes(g *gin.RouterGroup, app *App) {
 		authGroup.POST("/game-reviews/:id/comments", app.GameHandler.CreateReviewComment)
 		authGroup.PUT("/game-review-comments/:id", app.GameHandler.UpdateReviewComment)
 		authGroup.DELETE("/game-review-comments/:id", app.GameHandler.DeleteReviewComment)
+
+		// 游戏游玩记录
+		authGroup.POST("/games/play", app.GameHandler.UpsertMyGamePlay)
+		authGroup.GET("/games/play", app.GameHandler.GetMyGamePlays)
+		authGroup.DELETE("/games/play/:gameId", app.GameHandler.DeleteMyGamePlay)
+
+		authGroup.GET("/points/wallet", app.PointsHandler.GetMyWallet)
+		authGroup.POST("/points/checkin", app.PointsHandler.Checkin)
 	}
 }

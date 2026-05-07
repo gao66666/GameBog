@@ -27,7 +27,7 @@ func NewArticleRepository(db *gorm.DB) *ArticleRepository {
 
 // 初始化表结构
 func (r *ArticleRepository) InitTable() error {
-	err := r.db.AutoMigrate(&models.Article{}, &models.ArticleLike{}, &models.Tag{}, &models.ArticleGame{}, &models.ArticleTopic{})
+	err := r.db.AutoMigrate(&models.Article{}, &models.ArticleLike{}, &models.ArticleCollection{}, &models.Tag{}, &models.ArticleGame{}, &models.ArticleTopic{})
 	if err != nil {
 		return ErrInitArticle
 	}
@@ -242,6 +242,7 @@ func (r *ArticleRepository) UpdateArticle(article *models.Article) error {
 		Updates(map[string]interface{}{
 			"title":       article.Title,
 			"summary":     article.Summary,
+			"cover_url":   article.CoverURL,
 			"content":     article.Content,
 			"category_id": article.CategoryID,
 			"updated_at":  article.UpdatedAt,
@@ -259,6 +260,7 @@ func (r *ArticleRepository) UpdateArticleWithTags(article *models.Article) error
 			Updates(map[string]interface{}{
 				"title":       article.Title,
 				"summary":     article.Summary,
+				"cover_url":   article.CoverURL,
 				"content":     article.Content,
 				"category_id": article.CategoryID,
 				"updated_at":  article.UpdatedAt,
@@ -425,4 +427,95 @@ func (r *ArticleRepository) GetArticlesByAuthorsSinceOrderByView(authorIDs []uin
 		Find(&articles).Error
 
 	return articles, total, err
+}
+
+// --- ArticleCollection ---
+
+func (r *ArticleRepository) AddCollection(userID, articleID uint64) error {
+	c := &models.ArticleCollection{UserID: userID, ArticleID: articleID}
+	return r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(c).Error
+}
+
+func (r *ArticleRepository) RemoveCollection(userID, articleID uint64) error {
+	return r.db.Where("user_id = ? AND article_id = ?", userID, articleID).Delete(&models.ArticleCollection{}).Error
+}
+
+func (r *ArticleRepository) ListCollectionByUser(userID uint64) ([]*models.ArticleCollection, error) {
+	var list []*models.ArticleCollection
+	err := r.db.Where("user_id = ?", userID).Order("created_at DESC").Find(&list).Error
+	return list, err
+}
+
+type collectionArticleScanRow struct {
+	ArticleID   uint64    `gorm:"column:article_id"`
+	CollectedAt time.Time `gorm:"column:collected_at"`
+	Title       string    `gorm:"column:title"`
+	Summary     string    `gorm:"column:summary"`
+	CoverURL    string    `gorm:"column:cover_url"`
+}
+
+type articleTagPair struct {
+	ArticleID uint64 `gorm:"column:article_id"`
+	TagID     uint   `gorm:"column:tag_id"`
+	TagName   string `gorm:"column:tag_name"`
+}
+
+// ListUserCollectionItems 用户收藏列表（联表文章 + 批量标签）。
+func (r *ArticleRepository) ListUserCollectionItems(userID uint64) ([]*models.ArticleCollectionItem, error) {
+	if userID == 0 {
+		return []*models.ArticleCollectionItem{}, nil
+	}
+	var rows []collectionArticleScanRow
+	err := r.db.Table("article_collections AS ac").
+		Select("ac.article_id, ac.created_at AS collected_at, a.title, a.summary, a.cover_url").
+		Joins("INNER JOIN articles AS a ON a.id = ac.article_id").
+		Where("ac.user_id = ?", userID).
+		Order("ac.created_at DESC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return []*models.ArticleCollectionItem{}, nil
+	}
+	ids := make([]uint64, len(rows))
+	for i := range rows {
+		ids[i] = rows[i].ArticleID
+	}
+	var pairs []articleTagPair
+	if err := r.db.Table("article_tags AS at").
+		Select("at.article_id, t.id AS tag_id, t.name AS tag_name").
+		Joins("INNER JOIN tags AS t ON t.id = at.tag_id").
+		Where("at.article_id IN ?", ids).
+		Scan(&pairs).Error; err != nil {
+		return nil, err
+	}
+	tagMap := make(map[uint64][]models.Tag)
+	for _, p := range pairs {
+		tagMap[p.ArticleID] = append(tagMap[p.ArticleID], models.Tag{ID: p.TagID, Name: p.TagName})
+	}
+	out := make([]*models.ArticleCollectionItem, len(rows))
+	for i := range rows {
+		tags := tagMap[rows[i].ArticleID]
+		if tags == nil {
+			tags = []models.Tag{}
+		}
+		out[i] = &models.ArticleCollectionItem{
+			ArticleID:   rows[i].ArticleID,
+			Title:       rows[i].Title,
+			Summary:     rows[i].Summary,
+			CoverURL:    models.NormalizeArticleCoverURL(rows[i].CoverURL),
+			Tags:        tags,
+			CollectedAt: rows[i].CollectedAt,
+		}
+	}
+	return out, nil
+}
+
+func (r *ArticleRepository) IsCollected(userID, articleID uint64) (bool, error) {
+	var count int64
+	err := r.db.Model(&models.ArticleCollection{}).
+		Where("user_id = ? AND article_id = ?", userID, articleID).
+		Count(&count).Error
+	return count > 0, err
 }

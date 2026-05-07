@@ -48,6 +48,8 @@ type ArticleService struct {
 	redisRepo   *database.RedisArticleRepository
 	topicRepo   *database.TopicRepository
 	gameRepo    *database.GameRepository
+	pointsSvc   *PointsService
+	userSvc     *UserService
 	guard       *cache.ArticleGuard
 }
 
@@ -81,7 +83,7 @@ func (s *ArticleService) fillCommentCounts(articles []*models.Article) {
 	}
 }
 
-func NewArticleService(dataRepo *database.ArticleRepository, userRepo *database.UserRepository, commentRepo *database.CommentRepository, followRepo *database.FollowRepository, rs *database.RedisArticleRepository, topicRepo *database.TopicRepository, gameRepo *database.GameRepository) *ArticleService {
+func NewArticleService(dataRepo *database.ArticleRepository, userRepo *database.UserRepository, commentRepo *database.CommentRepository, followRepo *database.FollowRepository, rs *database.RedisArticleRepository, topicRepo *database.TopicRepository, gameRepo *database.GameRepository, pointsSvc *PointsService, userSvc *UserService) *ArticleService {
 	svc := &ArticleService{
 		articleDB:   dataRepo,
 		userRepo:    userRepo,
@@ -90,11 +92,52 @@ func NewArticleService(dataRepo *database.ArticleRepository, userRepo *database.
 		redisRepo:   rs,
 		topicRepo:   topicRepo,
 		gameRepo:    gameRepo,
+		pointsSvc:   pointsSvc,
+		userSvc:     userSvc,
 		guard:       cache.NewArticleGuard(1_000_000, 0.01),
 	}
 	svc.warmBloomFilter()
 	svc.startHotKeyRefresher()
 	return svc
+}
+
+// --- ArticleCollection ---
+
+func (s *ArticleService) CollectArticle(userID, articleID uint64) error {
+	if err := s.articleDB.AddCollection(userID, articleID); err != nil {
+		return err
+	}
+	if s.redisRepo != nil {
+		_ = s.redisRepo.DeleteUserCollectionList(userID)
+	}
+	// 收藏积分
+	if s.pointsSvc != nil {
+		_ = s.pointsSvc.EarnPoints(userID, "collect", articleID)
+	}
+	return nil
+}
+
+func (s *ArticleService) UncollectArticle(userID, articleID uint64) error {
+	if err := s.articleDB.RemoveCollection(userID, articleID); err != nil {
+		return err
+	}
+	if s.redisRepo != nil {
+		_ = s.redisRepo.DeleteUserCollectionList(userID)
+	}
+	return nil
+}
+
+// IsArticleCollected 当前用户是否已收藏该文章（未登录请传 userID=0，恒为 false）。
+func (s *ArticleService) IsArticleCollected(userID, articleID uint64) (bool, error) {
+	if userID == 0 || articleID == 0 {
+		return false, nil
+	}
+	return s.articleDB.IsCollected(userID, articleID)
+}
+
+func (s *ArticleService) ListMyCollections(userID uint64) ([]*models.ArticleCollectionItem, error) {
+	// 需标题/摘要/标签，不走仅含 article_id 的 Redis 缓存
+	return s.articleDB.ListUserCollectionItems(userID)
 }
 
 func (s *ArticleService) startHotKeyRefresher() {
@@ -177,6 +220,7 @@ func (s *ArticleService) rebuildArticleCacheAsync(id uint64) {
 
 func (s *ArticleService) CreateArticle(article *models.Article) error {
 	if article != nil {
+		article.CoverURL = models.NormalizeArticleCoverURL(article.CoverURL)
 		// 摘要要求前端必填，这里仅做最小规范化，不再用正文截取覆盖
 		article.Summary = normalizeSummaryText(article.Summary)
 
@@ -225,6 +269,16 @@ func (s *ArticleService) CreateArticle(article *models.Article) error {
 	_ = s.redisRepo.SetArticleCache(article.ID, article)
 	_ = s.redisRepo.AddLatestArticle(article.ID, article.CreatedAt)
 	s.syncArticleToSearch(article)
+
+	// 发文积分奖励（异步发放，不影响主流程）
+	if s.pointsSvc != nil {
+		if err := s.pointsSvc.EarnPoints(article.AuthorID, "article", article.ID); err != nil {
+			zap.L().Warn("发文积分发放失败", zap.Uint64("article_id", article.ID), zap.Error(err))
+		}
+	}
+	if s.userSvc != nil && article != nil && article.AuthorID != 0 {
+		s.userSvc.InvalidateUserSocialStats(article.AuthorID)
+	}
 	return nil
 }
 
@@ -287,6 +341,7 @@ func (s *ArticleService) syncArticleToSearch(article *models.Article) {
 		AuthorName: authorName,
 		Tags:       tags,
 		Summary:    article.Summary,
+		CoverURL:   models.EffectiveArticleCoverURL(article),
 	}
 
 	if err := mq.PublishSearchSync(payload); err != nil {
@@ -464,6 +519,19 @@ func (s *ArticleService) LikeArticle(id uint64, userID uint64, isCancel bool) er
 		return err
 	}
 
+	// 4) 被点赞 → 给文章作者加积分（仅在点赞时，取消点赞不扣分）
+	if actionType == "like" && s.pointsSvc != nil {
+		article, err := s.articleDB.GetArticleByID(id)
+		if err == nil && article != nil && article.AuthorID != userID {
+			if err := s.pointsSvc.EarnPoints(article.AuthorID, "article_liked", id); err != nil {
+				zap.L().Warn("文章被点赞积分发放失败",
+					zap.Uint64("article_id", id),
+					zap.Uint64("author_id", article.AuthorID),
+					zap.Error(err))
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -585,7 +653,7 @@ func (s *ArticleService) DeleteArticle(userID uint64, articleID uint64) error {
 	return s.articleDB.DeleteArticle(articleID, userID)
 }
 
-func (s *ArticleService) UpdateArticle(userID uint64, articleID uint64, title, summary, content string, tagNames []string, categoryID uint, gameIDs []uint64) error {
+func (s *ArticleService) UpdateArticle(userID uint64, articleID uint64, title, summary, content string, coverURL string, tagNames []string, categoryID uint, gameIDs []uint64) error {
 	article, err := s.articleDB.GetArticleByID(articleID)
 	if err != nil {
 		return err
@@ -607,6 +675,7 @@ func (s *ArticleService) UpdateArticle(userID uint64, articleID uint64, title, s
 	article.Title = title
 	article.Summary = normalizeSummaryText(summary)
 	article.Content = content
+	article.CoverURL = models.NormalizeArticleCoverURL(coverURL)
 	article.UpdatedAt = time.Now()
 
 	// 更新 tags
@@ -642,7 +711,7 @@ func (s *ArticleService) UpdateArticle(userID uint64, articleID uint64, title, s
 }
 
 func (s *ArticleService) GetLeaderboard(actionType string) ([]*models.Article, error) {
-	// 1. 从 Redis 拿到有序的 ID 列表 (例如: [105, 101, 202])
+	// 1. 从 Redis 合并最近 7 天日桶后拿到有序的 ID 列表 (例如: [105, 101, 202])
 	ids, err := s.redisRepo.GetTopArticleIDs(actionType, 10)
 	if err != nil || len(ids) == 0 {
 		return nil, err

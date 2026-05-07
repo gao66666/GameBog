@@ -25,11 +25,12 @@ func (h *TopicHandler) DeleteTemporaryTopic(c *gin.Context) {
 }
 
 type TopicHandler struct {
-	se *service.TopicService
+	se       *service.TopicService
+	followSe *service.FollowService
 }
 
-func NewTopicHandler(serve *service.TopicService) *TopicHandler {
-	return &TopicHandler{se: serve}
+func NewTopicHandler(serve *service.TopicService, follow *service.FollowService) *TopicHandler {
+	return &TopicHandler{se: serve, followSe: follow}
 }
 
 // GetTopicsPublic 获取可用话题列表（长期 + 未过期临时）。
@@ -94,7 +95,26 @@ func (h *TopicHandler) GetTopicPublic(c *gin.Context) {
 		tool.ResponseErrorWithMsg(c, "话题不存在或已过期")
 		return
 	}
-	tool.ResponseSuccess(c, gin.H{"topic": t}, "ok")
+
+	payload := gin.H{"topic": t}
+
+	// 若存在游戏 ↔ 话题映射，仅作展示（关注话题一律用 topicId，与游戏无关）。
+	gameID, errGame := h.se.GetLinkedGameID(topicID)
+	if errGame == nil && gameID != 0 {
+		payload["linkedGameId"] = strconv.FormatUint(gameID, 10)
+	}
+
+	followed := false
+	uid := OptionalJWTUserID(c)
+	if uid != 0 && h.followSe != nil {
+		ok, ferr := h.followSe.IsTopicFollowed(uid, topicID)
+		if ferr == nil {
+			followed = ok
+		}
+	}
+	payload["isTopicFollowed"] = followed
+
+	tool.ResponseSuccess(c, payload, "ok")
 }
 
 func (h *TopicHandler) GetTopicArticlesPublic(c *gin.Context) {

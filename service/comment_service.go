@@ -28,6 +28,7 @@ type CommentService struct {
 	notificationRepo  *database.NotificationRepository
 	redisNotification *database.RedisNotificationRepository
 	pusher            NotificationPusher
+	pointsSvc         *PointsService
 }
 
 func NewCommentService(
@@ -38,6 +39,7 @@ func NewCommentService(
 	notifyRepo *database.NotificationRepository,
 	notifyRedis *database.RedisNotificationRepository,
 	pusher NotificationPusher,
+	pointsSvc *PointsService,
 ) *CommentService {
 	return &CommentService{
 		commentRepo: dataRepo,
@@ -48,6 +50,7 @@ func NewCommentService(
 		notificationRepo:  notifyRepo,
 		redisNotification: notifyRedis,
 		pusher:            pusher,
+		pointsSvc:         pointsSvc,
 	}
 }
 
@@ -77,6 +80,11 @@ func (s *CommentService) DeleteComment(userID uint64, commentID uint64) error {
 	if err := s.commentRepo.DeleteCommentByID(commentID, userID); err != nil {
 		return err
 	}
+
+	// 如果删除的是 CY 评论，清理缓存
+	if comment.CommentType == "cy" && s.redisRepo != nil {
+		_ = s.redisRepo.DeleteUserCYList(userID)
+	}
 	return nil
 }
 
@@ -89,6 +97,13 @@ func (s *CommentService) CreateComment(comment *models.Comment) (*models.Comment
 
 	// 2. 触发异步推送（不阻塞主流程）
 	go s.sendCommentNotification(comment)
+
+	// 3. 评论积分奖励
+	if s.pointsSvc != nil {
+		if err := s.pointsSvc.EarnPoints(comment.UserID, "comment", comment.ID); err != nil {
+			zap.L().Warn("评论积分发放失败", zap.Uint64("comment_id", comment.ID), zap.Error(err))
+		}
+	}
 
 	return comment, nil
 }
@@ -245,9 +260,10 @@ func (s *CommentService) GetCommentByArticleID(aid uint64, page, size, limit int
 
 func (s *CommentService) convertToVO(c *models.Comment) *models.CommentVO {
 	vo := &models.CommentVO{
-		ID:      c.ID, // 如果前端是 Web，这里建议转成 string
-		RootID:  c.RootID,
-		Content: c.Content,
+		ID:          c.ID, // 如果前端是 Web，这里建议转成 string
+		RootID:      c.RootID,
+		Content:     c.Content,
+		CommentType: c.CommentType,
 		User: models.CommentUser{
 			UserID:   c.User.ID,
 			UserName: c.User.Name,
@@ -270,4 +286,171 @@ func (s *CommentService) convertToVO(c *models.Comment) *models.CommentVO {
 func (s *CommentService) GetCommentFloorDetails(rootID uint64, offset int, limit int) ([]*models.Comment, int64, error) {
 	comments, total, err := s.commentRepo.GetCommentByRootID(rootID, offset, limit)
 	return comments, total, err
+}
+
+// LikeComment 点赞/取消点赞评论（复用文章点赞模式）。
+func (s *CommentService) LikeComment(commentID uint64, userID uint64, isCancel bool) error {
+	if userID == 0 || commentID == 0 {
+		return fmt.Errorf("invalid user_id/comment_id")
+	}
+
+	actionType := "like"
+	if isCancel {
+		actionType = "unlike"
+	}
+
+	// 1) 先落唯一行为记录，只在状态真正变化时才继续
+	changed, err := s.commentRepo.EnsureCommentLikeState(userID, commentID, isCancel)
+	if err != nil {
+		zap.L().Warn("更新评论点赞状态失败",
+			zap.Uint64("comment_id", commentID),
+			zap.Uint64("user_id", userID),
+			zap.Error(err))
+		return err
+	}
+	if !changed {
+		return nil
+	}
+
+	// 2) 更新 Redis 实时计数
+	if actionType == "like" {
+		if err := s.redisRepo.IncrStats(commentID); err != nil {
+			return err
+		}
+	} else {
+		if err := s.redisRepo.DecrStats(commentID); err != nil {
+			return err
+		}
+	}
+
+	// 3) 投递 NSQ 消息（用于 MySQL 批量落库）
+	msg := mq.CommentActionMsg{
+		Type:      actionType,
+		CommentID: commentID,
+		UserID:    userID,
+		Timestamp: time.Now().Unix(),
+	}
+	if err := mq.PublishCommentAction(msg); err != nil {
+		zap.L().Error("发送评论点赞消息到NSQ失败", zap.Uint64("cid", commentID), zap.Error(err))
+		// MQ 发送失败：回滚 Redis 侧增量
+		if actionType == "like" {
+			_ = s.redisRepo.DecrStats(commentID)
+		} else {
+			_ = s.redisRepo.IncrStats(commentID)
+		}
+		return err
+	}
+
+	// 4) 被点赞 → 给评论作者加积分（仅在点赞时）
+	if actionType == "like" && s.pointsSvc != nil {
+		comment, err := s.commentRepo.GetCommentByID(commentID)
+		if err == nil && comment != nil && comment.UserID != userID {
+			if err := s.pointsSvc.EarnPoints(comment.UserID, "comment_liked", commentID); err != nil {
+				zap.L().Warn("评论被点赞积分发放失败",
+					zap.Uint64("comment_id", commentID),
+					zap.Uint64("author_id", comment.UserID),
+					zap.Error(err))
+			}
+		}
+	}
+
+	return nil
+}
+
+// --- CY 插眼 ---
+
+// CreateCY 创建一条 CY 评论。
+func (s *CommentService) CreateCY(comment *models.Comment) (*models.Comment, error) {
+	if comment == nil {
+		return nil, ErrInternalServer
+	}
+	comment.CommentType = "cy"
+
+	saved, err := s.commentRepo.CreateComment(comment)
+	if err != nil {
+		return nil, err
+	}
+
+	// 清理 CY 列表缓存
+	if s.redisRepo != nil {
+		_ = s.redisRepo.DeleteUserCYList(comment.UserID)
+	}
+	return saved, nil
+}
+
+// GetMyCYList 获取当前用户的 CY 列表（Redis 缓存 → DB）。
+func (s *CommentService) GetMyCYList(userID uint64) ([]*models.Comment, error) {
+	if userID == 0 {
+		return nil, ErrInternalServer
+	}
+	if s.redisRepo != nil {
+		if cached, hit, err := s.redisRepo.GetUserCYList(userID); err == nil && hit {
+			return cached, nil
+		}
+	}
+	list, err := s.commentRepo.ListCYByUserID(userID)
+	if err != nil {
+		return nil, err
+	}
+	if list == nil {
+		list = []*models.Comment{}
+	}
+	if s.redisRepo != nil {
+		_ = s.redisRepo.SetUserCYList(userID, list)
+	}
+	return list, nil
+}
+
+// ListMyCYForDisplay 当前用户的 CY 列表，附带文章标题（供个人中心展示）。
+func (s *CommentService) ListMyCYForDisplay(userID uint64) ([]models.CYListItem, error) {
+	list, err := s.GetMyCYList(userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return []models.CYListItem{}, nil
+	}
+
+	idSet := make(map[uint64]struct{})
+	for _, c := range list {
+		if c != nil && c.ArticleID != 0 {
+			idSet[c.ArticleID] = struct{}{}
+		}
+	}
+	ids := make([]uint64, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+
+	var articles []*models.Article
+	if s.articleRepo != nil && len(ids) > 0 {
+		if err := s.articleRepo.GetArticlesByIDs(ids, &articles); err != nil {
+			zap.L().Warn("ListMyCYForDisplay batch article", zap.Error(err))
+		}
+	}
+	titleByID := make(map[uint64]string, len(articles))
+	for _, a := range articles {
+		if a != nil {
+			titleByID[a.ID] = a.Title
+		}
+	}
+
+	out := make([]models.CYListItem, 0, len(list))
+	for _, c := range list {
+		if c == nil {
+			continue
+		}
+		title := titleByID[c.ArticleID]
+		if title == "" {
+			title = "文章已删除或不可用"
+		}
+		out = append(out, models.CYListItem{
+			CommentID:    c.ID,
+			ArticleID:    c.ArticleID,
+			ArticleTitle: title,
+			Content:      c.Content,
+			CreatedAt:    c.CreatedAt,
+		})
+	}
+	return out, nil
 }

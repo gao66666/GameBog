@@ -20,18 +20,17 @@ func InitNSQ(addr string, db *gorm.DB, rdb *redis.Client) {
 	// 1. 初始化生产者
 	initProducer(addr)
 
-	// 2. 注册：统计业务消费者 (处理点赞、阅读量)
+	// 2. 注册：文章统计消费者 (处理点赞、阅读量)
 	articleRepo := database.NewArticleRepository(db)
-
-	// 3. 初始化 Worker
 	worker := NewStatsWorker(articleRepo)
 	worker.StartFlushTicks()
-
-	// 4. 注册消费者
 	registerConsumer(addr, "article_stats", "stats_sync_group", worker)
 
-	// 3. 以后想加新业务，直接在这里加一行即可：
-	// registerConsumer(addr, "article_stats", "another_biz_group", NewAnotherWorker())
+	// 3. 注册：评论点赞消费者
+	commentRepo := database.NewCommentRepository(db)
+	commentWorker := NewCommentStatsWorker(commentRepo)
+	commentWorker.StartFlushTicks()
+	registerConsumer(addr, "comment_stats", "comment_stats_group", commentWorker)
 
 	zap.L().Info("所有 NSQ 服务初始化完成")
 }
@@ -111,8 +110,15 @@ func PublishAction(msg ArticleActionMsg) error {
 	}
 
 	// 调用之前定义的通用 Publish 函数
-	// Topic 建议定义为常量，方便后期统一修改
 	return Publish("article_stats", msg)
+}
+
+// PublishCommentAction 发布评论点赞消息
+func PublishCommentAction(msg CommentActionMsg) error {
+	if msg.Timestamp == 0 {
+		msg.Timestamp = time.Now().Unix()
+	}
+	return Publish("comment_stats", msg)
 }
 
 // Close 优雅关闭连接

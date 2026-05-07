@@ -9,6 +9,7 @@ type Article struct {
 	AuthorID     uint64 `gorm:"column:author_id;default:0" json:"authorId,string"`
 	Title        string `gorm:"column:title;size:200;not null" json:"title"`
 	Summary      string `gorm:"column:summary;size:500" json:"summary"`
+	CoverURL     string `gorm:"column:cover_url;size:512;default:''" json:"coverUrl"`
 	Content      string `gorm:"column:content;type:longtext" json:"content"`
 	ViewCount    uint64 `gorm:"column:view_count;default:0" json:"viewCount,string"`
 	LikeCount    uint64 `gorm:"column:like_count;default:0" json:"likeCount,string"`
@@ -32,6 +33,23 @@ type ArticleLike struct {
 	CreatedAt time.Time `gorm:"column:created_at" json:"createdAt"`
 }
 
+// ArticleCollection 文章收藏。
+type ArticleCollection struct {
+	UserID    uint64    `gorm:"primaryKey;column:user_id" json:"userId,string"`
+	ArticleID uint64    `gorm:"primaryKey;column:article_id" json:"articleId,string"`
+	CreatedAt time.Time `gorm:"column:created_at" json:"createdAt"`
+}
+
+// ArticleCollectionItem 我的收藏列表 API 项（含标题、摘要、标签）。
+type ArticleCollectionItem struct {
+	ArticleID   uint64    `json:"articleId,string"`
+	Title       string    `json:"title"`
+	Summary     string    `json:"summary"`
+	CoverURL    string    `json:"coverUrl"`
+	Tags        []Tag     `json:"tags"`
+	CollectedAt time.Time `json:"collectedAt"`
+}
+
 type Tag struct {
 	ID   uint   `gorm:"primaryKey" json:"id"`
 	Name string `gorm:"column:name;size:50;unique;not null" json:"name"`
@@ -41,6 +59,7 @@ type ParamPostArticle struct {
 	Title      string   `json:"title" binding:"required"`
 	Summary    string   `json:"summary" binding:"required"`
 	Content    string   `json:"content" binding:"required"`
+	CoverURL   string   `json:"cover_url"`
 	Tags       []string `json:"tags"`
 	GameIDs    []uint64 `json:"game_ids"`
 	CategoryID uint     `json:"section_id"` // 板块ID，可以先传0

@@ -1,139 +1,166 @@
 (function () {
-    const { qs, api, getAuth } = window.GoBlog;
+    'use strict';
 
-    function setText(id, t) {
-        const el = qs(id);
-        if (el) el.textContent = t || '';
-    }
+    if (!window.GoBlog) return;
+    var qs = window.GoBlog.qs;
+    var api = window.GoBlog.api;
+    var getAuth = window.GoBlog.getAuth;
 
-    function escapeText(s) {
-        return String(s || '');
-    }
+    var state = { page: 1, size: 10, total: 0 };
 
-    function fmtExpires(expiresAt) {
-        if (!expiresAt) return '';
+    function setText(id, t) { var el = qs(id); if (el) el.textContent = t || ''; }
+
+    function fmtExpires(exp) {
+        if (!exp) return '';
         try {
-            const d = new Date(expiresAt);
+            var d = new Date(exp);
             if (isNaN(d.getTime())) return '';
-            return d.toLocaleString();
-        } catch { return ''; }
+            return '到期 ' + d.toLocaleString();
+        } catch (e) { return ''; }
     }
 
-
-    let topicPage = 1;
-    let topicTotal = 0;
-    const topicPageSize = 5;
-
-    function renderTopics(list, total) {
-        const root = qs('topicList');
-        const msg = qs('topicListMsg');
-        const pager = qs('topicPager');
+    function render(list, total) {
+        var root = qs('topicList');
+        var empty = qs('topicEmpty');
+        var count = qs('topicCount');
         if (!root) return;
         root.innerHTML = '';
-        if (pager) pager.innerHTML = '';
 
-        const topics = Array.isArray(list) ? list : [];
+        var topics = Array.isArray(list) ? list : [];
+
+        if (count) count.textContent = total ? ('共 ' + total + ' 个话题') : '暂无话题';
+
         if (!topics.length) {
-            if (msg) msg.textContent = '暂无话题';
+            if (empty) empty.style.display = '';
             return;
         }
-        if (msg) msg.textContent = '';
+        if (empty) empty.style.display = 'none';
 
-        topics.forEach((t) => {
-            const id = t && (t.id ?? t.ID);
-            const name = String((t && (t.name ?? t.Name)) || '').trim();
+        topics.forEach(function (t) {
+            var id = t && (t.id || t.ID);
+            var name = String(t && (t.name || t.Name) || '').trim();
             if (!id || !name) return;
-            const isTemp = !!(t && (t.isTemporary ?? t.is_temporary ?? t.IsTemporary));
-            const exp = t && (t.expiresAt ?? t.expires_at ?? t.ExpiresAt);
 
-            const row = document.createElement('div');
-            row.className = 'item';
-            row.style.padding = '14px 0';
+            var isTemp = !!(t && (t.isTemporary || t.is_temporary || t.IsTemporary));
+            var exp = t && (t.expiresAt || t.expires_at || t.ExpiresAt);
 
-            const a = document.createElement('a');
-            a.href = '/topic/' + encodeURIComponent(String(id));
-            a.textContent = name;
-            a.style.display = 'inline-block';
-            a.style.fontSize = '18px';
-            a.style.fontWeight = '700';
+            var card = document.createElement('div');
+            card.className = 'topic-card';
 
-            const meta = document.createElement('div');
-            meta.className = 'muted';
-            meta.style.marginTop = '8px';
-            meta.textContent = isTemp ? ('临时 · 到期 ' + (fmtExpires(exp) || '-')) : '长期';
+            var body = document.createElement('div');
+            body.className = 'topic-card-body';
 
-            row.appendChild(a);
-            row.appendChild(meta);
-            root.appendChild(row);
+            var title = document.createElement('a');
+            title.className = 'topic-card-title';
+            title.href = '/topic/' + encodeURIComponent(String(id));
+            title.textContent = name;
+            body.appendChild(title);
+
+            var meta = document.createElement('div');
+            meta.className = 'topic-card-meta';
+
+            var badge = document.createElement('span');
+            badge.className = 'topic-card-badge ' + (isTemp ? 'badge-temporary' : 'badge-permanent');
+            badge.textContent = isTemp ? '临时' : '长期';
+            meta.appendChild(badge);
+
+            if (isTemp && exp) {
+                var expires = document.createElement('span');
+                expires.className = 'topic-card-expires';
+                expires.textContent = fmtExpires(exp);
+                meta.appendChild(expires);
+            }
+
+            body.appendChild(meta);
+            card.appendChild(body);
+            root.appendChild(card);
         });
 
-        // 分页控件
-        if (pager && total > topicPageSize) {
-            const totalPages = Math.ceil(total / topicPageSize);
-            if (topicPage > 1) {
-                const prev = document.createElement('button');
-                prev.textContent = '上一页';
-                prev.onclick = function () { topicPage--; loadTopics(); };
-                pager.appendChild(prev);
-            }
-            pager.appendChild(document.createTextNode(' 第 ' + topicPage + ' / ' + totalPages + ' 页 '));
-            if (topicPage < totalPages) {
-                const next = document.createElement('button');
-                next.textContent = '下一页';
-                next.onclick = function () { topicPage++; loadTopics(); };
-                pager.appendChild(next);
-            }
-        }
+        // 分页
+        var prevBtn = qs('topicPrev');
+        var nextBtn = qs('topicNext');
+        var info = qs('topicPageInfo');
+        if (!prevBtn || !nextBtn) return;
+
+        var maxPage = Math.max(1, Math.ceil(total / state.size));
+        if (info) info.textContent = total > 0 ? ('第 ' + state.page + ' / ' + maxPage + ' 页') : '';
+        prevBtn.disabled = state.page <= 1;
+        nextBtn.disabled = state.page >= maxPage || total === 0;
     }
 
-    async function loadTopics() {
-        setText('topicListMsg', '加载中...');
+    async function load() {
+        var root = qs('topicList');
+        if (root) root.innerHTML = '';
+        setText('topicCount', '加载中...');
+
         try {
-            const resp = await api('/api/v1/topics?page=' + topicPage + '&size=' + topicPageSize);
-            const list = resp && resp.data && (resp.data.topics || resp.data.list || resp.data) || [];
-            topicTotal = (resp && resp.data && (resp.data.total || resp.data.count)) || 0;
-            renderTopics(list, topicTotal);
+            var resp = await api('/api/v1/topics?page=' + state.page + '&size=' + state.size);
+            var data = resp && resp.data;
+            var list = (data && (data.topics || data.list || data)) || [];
+            state.total = (data && (data.total || data.count)) || 0;
+            render(list, state.total);
         } catch (e) {
-            setText('topicListMsg', '加载失败：' + e.message);
+            setText('topicCount', '加载失败');
+            var empty = qs('topicEmpty');
+            if (empty) { empty.style.display = ''; empty.innerHTML = '<div class="topics-empty-icon">⚠</div><div class="topics-empty-text">' + e.message + '</div>'; }
         }
     }
 
-    async function createTopic(ev) {
-        ev.preventDefault();
-
-        const { token } = getAuth();
-        if (!token) {
-            setText('topicCreateMsg', '请先登录再创建话题');
+    async function createTopic() {
+        var auth = getAuth();
+        if (!auth.token) {
+            setText('topicCreateMsg', '请先登录');
             return;
         }
+        var input = qs('topicNameInput');
+        var name = String(input && input.value || '').trim();
+        if (!name) { setText('topicCreateMsg', '请输入话题名称'); return; }
 
-        const input = qs('topicNameInput');
-        const name = String((input && input.value) || '').trim();
-        if (!name) {
-            setText('topicCreateMsg', '请输入话题名称');
-            return;
-        }
+        var kindEl = document.querySelector('input[name="topicKind"]:checked');
+        var kind = kindEl ? String(kindEl.value || 'long') : 'long';
 
-        const kindEl = document.querySelector('input[name="topicKind"]:checked');
-        const kind = kindEl ? String(kindEl.value || 'long') : 'long';
-
+        var btn = qs('topicCreateBtn');
+        if (btn) btn.disabled = true;
         setText('topicCreateMsg', '创建中...');
+
         try {
             await api('/api/v1/topics', {
                 method: 'POST',
-                body: JSON.stringify({ name: escapeText(name), kind })
+                body: JSON.stringify({ name: name, kind: kind })
             });
-            setText('topicCreateMsg', '创建成功');
+            setText('topicCreateMsg', '✅ 创建成功');
             if (input) input.value = '';
-            await loadTopics();
+            state.page = 1;
+            await load();
         } catch (e) {
-            setText('topicCreateMsg', '创建失败：' + e.message);
+            setText('topicCreateMsg', '❌ ' + e.message);
+        } finally {
+            if (btn) btn.disabled = false;
         }
     }
 
-    document.addEventListener('DOMContentLoaded', function () {
-        const form = qs('topicCreateForm');
-        if (form) form.addEventListener('submit', createTopic);
-        loadTopics();
-    });
+    function init() {
+        load();
+
+        var createBtn = qs('topicCreateBtn');
+        if (createBtn) createBtn.addEventListener('click', createTopic);
+
+        var prevBtn = qs('topicPrev');
+        var nextBtn = qs('topicNext');
+        if (prevBtn) prevBtn.addEventListener('click', function () { if (state.page > 1) { state.page--; load(); } });
+        if (nextBtn) nextBtn.addEventListener('click', function () {
+            var maxPage = Math.ceil(state.total / state.size);
+            if (state.page < maxPage) { state.page++; load(); }
+        });
+
+        var input = qs('topicNameInput');
+        if (input) {
+            input.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') { e.preventDefault(); createTopic(); }
+            });
+        }
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+    else init();
 })();

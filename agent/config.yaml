@@ -1,0 +1,84 @@
+llm:
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key: "1679da024e4048c3bc0281f20d3259e9.mcUA5BcVvxZ2ZPVy"
+  model: "glm-5"
+  temperature: 0.7
+  thinking: false
+
+summary_llm:
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key: "1679da024e4048c3bc0281f20d3259e9.mcUA5BcVvxZ2ZPVy"
+  model: "glm-4-air"
+  temperature: 0
+  thinking: false
+
+memory_manager_llm:
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key: "1679da024e4048c3bc0281f20d3259e9.mcUA5BcVvxZ2ZPVy"
+  model: "glm-4-air"
+  temperature: 0
+  thinking: false
+
+blog_api_url: "http://127.0.0.1:8084/api/v1"
+
+# 可与 Go 博客 Redis 使用不同实例：HTTP 短期上下文由网关从 goblog:agent:chat:* 注入请求；
+# 此处仅服务 Agent 本机 agent:short:* / agent:mid:* 等。Docker 内可设 REDIS_HOST=redis 或独立 redis 服务。
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+
+# 向量维度须与 embedding.dimensions 一致。若曾用 1536 建过库，需删集合或换新 collection 名后重建。
+qdrant:
+  url: "http://127.0.0.1:6333"
+  collection: "goblog_long_term_memory"
+  vector_size: 1024
+
+embedding:
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key: "1679da024e4048c3bc0281f20d3259e9.mcUA5BcVvxZ2ZPVy"
+  # 智谱当前文本嵌入模型名为 embedding-3 / embedding-2（非 text_embedding-v3）
+  model: "embedding-3"
+  dimensions: 1024
+
+mongo:
+  uri: "mongodb://root:123456@localhost:27017/?authSource=admin"
+  database: "goblog_long_term"
+  collection: "memory_facts"
+
+# 非空时 POST /memory/ingest-document 须在请求头携带 X-Ingest-Key 与之相同；也可用环境变量 DOCUMENT_INGEST_SECRET
+document_ingest_secret: ""
+
+memory:
+  short_ttl_minutes: 60
+  mid_ttl_days: 7
+  mid_max_items: 8
+  # 中期 facts：数组 [{at,text}]；以下为模型提示 + 写入前硬裁剪
+  mid_facts_max_items: 10
+  mid_facts_max_chars: 560
+  mid_fact_max_chars_per_item: 180
+  short_window_messages: 12
+  # Qdrant：每轮检索条数上限（向量/稀疏）
+  long_term_retrieval_limit: 6
+  # Mongo：每轮检索条数上限（候选池内按 query 词面相关度 + importance 重排）
+  mongo_retrieval_limit: 10
+  # Mongo 候选池上限（先 importance 排序再截断到此数量内做词面重排）
+  mongo_retrieval_candidate_cap: 80
+  session_idle_timeout_minutes: 30
+  summary_enabled: true
+  # Qdrant：dense + 稀疏词袋（入库时从 content 生成）双路 prefetch + 服务端 RRF（对齐 docker qdrant v1.10+）
+  hybrid_search: true
+  hybrid_prefetch_limit: 48
+  hybrid_dense_weight: 0.65
+  hybrid_keyword_weight: 0.35
+  hybrid_keyword_recall: true
+  # 可选：RRF 的 k（仅当设置时用 RrfQuery；不设则用 FusionQuery(RRF) 默认）
+  # hybrid_rrf_k: 60
+
+decision_llm:
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key: "1679da024e4048c3bc0281f20d3259e9.mcUA5BcVvxZ2ZPVy"
+  model: "glm-4-air"
+  temperature: 0
+  thinking: false

@@ -29,17 +29,19 @@ func NewCommentHandler(serve *service.CommentService) *CommentHandler {
 }
 
 type FollowHandler struct {
-	se *service.FollowService
+	se     *service.FollowService
+	userSe *service.UserService
 }
 
-func NewFollowHandler(serve *service.FollowService) *FollowHandler {
-	return &FollowHandler{se: serve}
+func NewFollowHandler(serve *service.FollowService, userSe *service.UserService) *FollowHandler {
+	return &FollowHandler{se: serve, userSe: userSe}
 }
 
 type GameHandler struct {
-	se *service.GameService
+	se     *service.GameService
+	userSe *service.UserService
 }
 
-func NewGameHandler(serve *service.GameService) *GameHandler {
-	return &GameHandler{se: serve}
+func NewGameHandler(serve *service.GameService, userSe *service.UserService) *GameHandler {
+	return &GameHandler{se: serve, userSe: userSe}
 }

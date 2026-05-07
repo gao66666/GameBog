@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -86,6 +87,17 @@ func (s *TopicService) GetActiveTopic(id uint) (*models.Topic, error) {
 		return nil, tool.NewBizError(500, 50001, "topic service unavailable")
 	}
 	return s.topicRepo.GetActiveTopicByID(id, time.Now())
+}
+
+// ErrTopicNoGameLink 表示话题未绑定游戏（无 game_topic_maps 记录）。
+var ErrTopicNoGameLink = errors.New("topic has no linked game")
+
+// GetLinkedGameID 话题若绑定游戏（game_topic_maps）则返回 game_id。
+func (s *TopicService) GetLinkedGameID(topicID uint) (uint64, error) {
+	if s == nil || s.topicRepo == nil || topicID == 0 {
+		return 0, ErrTopicNoGameLink
+	}
+	return s.topicRepo.GetGameIDByTopicID(topicID)
 }
 
 func (s *TopicService) CreateTopic(name string, isTemporary bool) (*models.Topic, error) {

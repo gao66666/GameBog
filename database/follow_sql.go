@@ -6,6 +6,7 @@ import (
 	"github.com/gao66666/GoBlog/models"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type FollowRepository struct {
@@ -19,9 +20,17 @@ func NewFollowRepository(db *gorm.DB) *FollowRepository {
 // 初始化表结构
 // InitTable 初始化关注表结构
 func (r *FollowRepository) InitTable() error {
-	if err := r.db.AutoMigrate(&models.Follow{}); err != nil {
+	if err := r.db.AutoMigrate(&models.Follow{}, &models.TopicFollow{}); err != nil {
 		zap.L().Error("关注表初始化失败", zap.Error(err))
 		return ErrInitFollow
+	}
+	// 历史表可能仍有 game_id；模型已移除，需删掉该列否则 INSERT 会失败
+	if r.db.Migrator().HasTable(&models.TopicFollow{}) && r.db.Migrator().HasColumn(&models.TopicFollow{}, "game_id") {
+		if err := r.db.Migrator().DropColumn(&models.TopicFollow{}, "game_id"); err != nil {
+			zap.L().Warn("移除 topic_follows.game_id 失败（可手工执行 migrations/000002_topic_follow_drop_game_id.sql）", zap.Error(err))
+		} else {
+			zap.L().Info("已移除 topic_follows.game_id 遗留列")
+		}
 	}
 	zap.L().Info("关注表初始化成功")
 	return nil
@@ -66,4 +75,49 @@ func (r *FollowRepository) GetFollowingIDs(followerID uint64, limit int) ([]uint
 		Limit(limit).
 		Pluck("following_id", &ids).Error
 	return ids, err
+}
+
+// CountFollowingUsers 当前用户关注的「用户」数量（follows 表，非话题关注）。
+func (r *FollowRepository) CountFollowingUsers(followerID uint64) (int64, error) {
+	if followerID == 0 {
+		return 0, nil
+	}
+	var n int64
+	err := r.db.Model(&models.Follow{}).
+		Where("follower_id = ?", followerID).
+		Count(&n).Error
+	return n, err
+}
+
+// --- TopicFollow ---
+
+func (r *FollowRepository) CreateTopicFollow(userID uint64, topicID uint) error {
+	tf := &models.TopicFollow{UserID: userID, TopicID: topicID}
+	return r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(tf).Error
+}
+
+func (r *FollowRepository) DeleteTopicFollow(userID uint64, topicID uint) error {
+	return r.db.Where("user_id = ? AND topic_id = ?", userID, topicID).Delete(&models.TopicFollow{}).Error
+}
+
+func (r *FollowRepository) ListTopicFollowByUser(userID uint64) ([]*models.TopicFollow, error) {
+	var list []*models.TopicFollow
+	err := r.db.Where("user_id = ?", userID).Order("created_at DESC").Find(&list).Error
+	return list, err
+}
+
+func (r *FollowRepository) ListUserIDsByTopicID(topicID uint) ([]uint64, error) {
+	var ids []uint64
+	err := r.db.Model(&models.TopicFollow{}).
+		Where("topic_id = ?", topicID).
+		Pluck("user_id", &ids).Error
+	return ids, err
+}
+
+func (r *FollowRepository) IsTopicFollowed(userID uint64, topicID uint) (bool, error) {
+	var count int64
+	err := r.db.Model(&models.TopicFollow{}).
+		Where("user_id = ? AND topic_id = ?", userID, topicID).
+		Count(&count).Error
+	return count > 0, err
 }

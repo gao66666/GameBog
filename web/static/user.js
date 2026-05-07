@@ -44,6 +44,17 @@
         if (title) title.textContent = name ? (name + ' 的主页') : '个人主页';
     }
 
+    async function loadUserPoints(uid) {
+        try {
+            const resp = await api('/api/v1/users/' + encodeURIComponent(uid) + '/points');
+            const d = resp && resp.data;
+            const bal = toNum(d && (d.balance ?? d.Balance));
+            setText('userPoints', String(bal));
+        } catch {
+            setText('userPoints', '-');
+        }
+    }
+
     async function loadOnline(uid) {
         try {
             const resp = await api('/api/v1/users/' + encodeURIComponent(uid) + '/online');
@@ -211,6 +222,7 @@
         } catch {
             // ignore
         }
+        await loadUserPoints(uid);
 
         const prevBtn = qs('userPrev');
         const nextBtn = qs('userNext');

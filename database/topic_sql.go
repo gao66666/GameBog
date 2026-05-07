@@ -88,6 +88,39 @@ func (r *TopicRepository) EnsureGameTopic(gameID uint64, gameName string) (uint,
 	return topic.ID, nil
 }
 
+func (r *TopicRepository) GetTopicIDByGameID(gameID uint64) (uint, error) {
+	if gameID == 0 {
+		return 0, gorm.ErrRecordNotFound
+	}
+	var mapped models.GameTopicMap
+	if err := r.db.Where("game_id = ?", gameID).First(&mapped).Error; err != nil {
+		return 0, err
+	}
+	return mapped.TopicID, nil
+}
+
+// GetGameIDByTopicID 若话题与游戏有映射则返回 game_id；否则 ErrRecordNotFound。
+func (r *TopicRepository) GetGameIDByTopicID(topicID uint) (uint64, error) {
+	if topicID == 0 {
+		return 0, gorm.ErrRecordNotFound
+	}
+	var mapped models.GameTopicMap
+	if err := r.db.Where("topic_id = ?", topicID).First(&mapped).Error; err != nil {
+		return 0, err
+	}
+	return mapped.GameID, nil
+}
+
+// GetTopicsByIDs 批量按主键取话题（用于关注列表等拼装标题）。
+func (r *TopicRepository) GetTopicsByIDs(ids []uint) ([]*models.Topic, error) {
+	if len(ids) == 0 {
+		return []*models.Topic{}, nil
+	}
+	var out []*models.Topic
+	err := r.db.Where("id IN ?", ids).Find(&out).Error
+	return out, err
+}
+
 func (r *TopicRepository) GetTopicIDsByGameIDs(gameIDs []uint64) ([]uint, error) {
 	if len(gameIDs) == 0 {
 		return []uint{}, nil

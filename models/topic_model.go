@@ -25,10 +25,14 @@ type TopicDiscussion struct {
 	CreatedAt time.Time `gorm:"column:created_at" json:"createdAt"`
 }
 
-// GameTopicMap 游戏与话题映射（一个游戏一个专属话题）。
+// GameTopicMap 游戏 ↔ 话题 一对一映射表（仅存关联；外键由 GORM 在迁移时创建）。
 type GameTopicMap struct {
-	GameID    uint64    `gorm:"primaryKey;column:game_id" json:"gameId,string"`
-	TopicID   uint      `gorm:"column:topic_id;not null;index" json:"topicId"`
+	GameID  uint64 `gorm:"primaryKey;column:game_id" json:"gameId,string"`
+	TopicID uint   `gorm:"column:topic_id;not null;uniqueIndex:uniq_game_topic_map_topic" json:"topicId"`
+
 	CreatedAt time.Time `gorm:"column:created_at" json:"createdAt"`
 	UpdatedAt time.Time `gorm:"column:updated_at" json:"updatedAt"`
+
+	Game  Game  `gorm:"foreignKey:GameID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
+	Topic Topic `gorm:"foreignKey:TopicID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT" json:"-"`
 }

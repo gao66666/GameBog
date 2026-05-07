@@ -3,16 +3,30 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>GoBlog - 个人主页</title>
+  <title>GameBog - 个人主页</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    /* 覆盖全局 button 白字：分页为浅底按钮 */
+    #userPrev, #userNext {
+      padding: 6px 16px;
+      font-size: 13px;
+      border-radius: 8px;
+      border: 1px solid #e8e8ed;
+      background: #fff;
+      color: #1d1d1f;
+      cursor: pointer;
+    }
+    #userPrev:disabled, #userNext:disabled { opacity: .45; cursor: not-allowed; }
+  </style>
 </head>
 <body>
   <header class="topbar">
     <div class="container row">
-      <div class="brand"><a href="/">GoBlog</a></div>
+      <div class="brand"><a href="/">GameBog</a></div>
       <nav class="nav">
         <a href="/" id="navHome">首页</a>
         <a href="/topics" id="navTopics">话题</a>
+        <a href="/game-library" id="navGameLibrary">游戏库</a>
         <a href="/me" id="navMe">个人中心</a>
         <a href="/login" id="navLogin">登录</a>
       </nav>
@@ -26,6 +40,7 @@
         <div class="k">用户ID</div><div class="v" id="userId">-</div>
         <div class="k">用户名</div><div class="v" id="userName">-</div>
         <div class="k">在线状态</div><div class="v" id="userOnline">-</div>
+        <div class="k">积分</div><div class="v" id="userPoints">-</div>
       </div>
 
       <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap;margin-top:10px">

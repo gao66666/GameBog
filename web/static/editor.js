@@ -366,6 +366,14 @@
                 tagsInput.value = normalizeTagNames(names.join(' ')).join(' ');
             }
 
+            const coverInput = qs('editorCoverInput');
+            if (coverInput) {
+                const raw = d.cover_url_edit != null && d.cover_url_edit !== undefined
+                    ? String(d.cover_url_edit)
+                    : String(d.coverUrlRaw || d.cover_url_raw || '');
+                coverInput.value = raw.trim();
+            }
+
             const topicId = d.category_id || d.categoryId || d.categoryID || 0;
             if (topicId) {
                 setSelectedTopicId(topicId);
@@ -421,7 +429,9 @@
                 return;
             }
 
-            const payload = { title, summary, content, tags, section_id: topicId };
+            const coverEl = qs('editorCoverInput');
+            const coverRaw = coverEl ? String(coverEl.value || '').trim() : '';
+            const payload = { title, summary, content, tags, section_id: topicId, cover_url: coverRaw };
 
             const resp = await api(url, {
                 method,
@@ -494,6 +504,8 @@
             if (titleInput) titleInput.value = '';
             if (summaryInput) summaryInput.value = '';
             if (contentInput) contentInput.value = '';
+            const coverInput = qs('editorCoverInput');
+            if (coverInput) coverInput.value = '';
 
             const sel = topicSelect();
             if (sel && sel.options && sel.options.length) {

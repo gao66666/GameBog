@@ -112,6 +112,15 @@ func (h *SearchHandler) GlobalSearch(c *gin.Context) {
 					zap.L().Warn("MySQL 搜索兜底也失败", zap.Error(fbErr))
 				}
 			}
+		} else if len(hits) == 0 && h.articleRepo != nil {
+			// ES 对中文默认 standard 分词效果差，常出现「请求成功但 0 条」；走 MySQL LIKE 子串匹配作为兜底。
+			articles, fbErr := h.articleRepo.SearchArticlesFallback(query, 20)
+			if fbErr != nil {
+				zap.L().Warn("ES 无命中后 MySQL 兜底失败", zap.Error(fbErr))
+				articleResults = hits
+			} else {
+				articleResults = articles
+			}
 		} else {
 			articleResults = hits
 		}

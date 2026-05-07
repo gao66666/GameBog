@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"sync"
 	"time"
 
@@ -19,6 +20,7 @@ const (
 	TopicNotificationPush  = "notification.push"
 	TopicNotificationStore = "notification.store"
 	TopicSearchPush        = "search.push"
+	TopicPointsSettle      = "points.settle"
 )
 
 type NotificationPayload struct {
@@ -43,6 +45,11 @@ type SearchSyncProcessor interface {
 	ProcessSearchSyncMessage(ctx context.Context, payload []byte) error
 }
 
+// PointsSettleProcessor 积分结算消费者接口
+type PointsSettleProcessor interface {
+	ProcessPointsSettleMessage(ctx context.Context, payload []byte) error
+}
+
 var (
 	kafkaBrokers []string
 	kafkaGroupID string
@@ -51,10 +58,40 @@ var (
 	kafkaCancel context.CancelFunc
 	kafkaWG     sync.WaitGroup
 
-	notificationWriter     *kafka.Writer
+	notificationWriter      *kafka.Writer
 	notificationStoreWriter *kafka.Writer
-	searchWriter           *kafka.Writer
+	searchWriter            *kafka.Writer
+	pointsSettleWriter      *kafka.Writer
 )
+
+func resolveBrokers(brokers []string) []string {
+	resolved := make([]string, 0, len(brokers))
+	for _, b := range brokers {
+		host, port, err := net.SplitHostPort(b)
+		if err != nil {
+			resolved = append(resolved, b)
+			continue
+		}
+		// 已经是 IP 地址，不需要解析
+		if net.ParseIP(host) != nil {
+			resolved = append(resolved, b)
+			continue
+		}
+		// 尝试 DNS 解析，失败则降级到 127.0.0.1
+		_, err = net.LookupHost(host)
+		if err != nil {
+			zap.L().Info("Kafka broker host 解析失败，降级到 127.0.0.1",
+				zap.String("original", b), zap.Error(err))
+			resolved = append(resolved, "127.0.0.1:"+port)
+			continue
+		}
+		resolved = append(resolved, b)
+	}
+	zap.L().Info("Kafka brokers 解析结果",
+		zap.Strings("original", brokers),
+		zap.Strings("resolved", resolved))
+	return resolved
+}
 
 func InitKafka(brokers []string, groupID string) error {
 	if len(brokers) == 0 {
@@ -63,6 +100,8 @@ func InitKafka(brokers []string, groupID string) error {
 	if groupID == "" {
 		return errors.New("kafka groupID is empty")
 	}
+
+	brokers = resolveBrokers(brokers)
 
 	kafkaBrokers = append([]string(nil), brokers...)
 	kafkaGroupID = groupID
@@ -94,6 +133,14 @@ func InitKafka(brokers []string, groupID string) error {
 		BatchTimeout: 100 * time.Millisecond,
 	}
 
+	pointsSettleWriter = &kafka.Writer{
+		Addr:         kafka.TCP(brokers...),
+		Topic:        TopicPointsSettle,
+		Balancer:     &kafka.LeastBytes{},
+		RequiredAcks: kafka.RequireAll, // acks=all，确保 leader 和副本都收到
+		BatchTimeout: 100 * time.Millisecond,
+	}
+
 	return nil
 }
 
@@ -116,9 +163,13 @@ func CloseKafka() {
 		_ = searchWriter.Close()
 		searchWriter = nil
 	}
+	if pointsSettleWriter != nil {
+		_ = pointsSettleWriter.Close()
+		pointsSettleWriter = nil
+	}
 }
 
-func StartKafkaConsumers(notification NotificationProcessor, notificationStore NotificationStoreProcessor, search SearchSyncProcessor) error {
+func StartKafkaConsumers(notification NotificationProcessor, notificationStore NotificationStoreProcessor, search SearchSyncProcessor, pointsSettle ...PointsSettleProcessor) error {
 	if kafkaCancel == nil || kafkaCtx == nil {
 		return errors.New("kafka is not initialized")
 	}
@@ -147,6 +198,15 @@ func StartKafkaConsumers(notification NotificationProcessor, notificationStore N
 			defer kafkaWG.Done()
 			consumeLoop(kafkaCtx, kafkaBrokers, kafkaGroupID, TopicSearchPush, func(ctx context.Context, value []byte) error {
 				return search.ProcessSearchSyncMessage(ctx, value)
+			})
+		}()
+	}
+	if len(pointsSettle) > 0 && pointsSettle[0] != nil {
+		kafkaWG.Add(1)
+		go func() {
+			defer kafkaWG.Done()
+			consumeLoop(kafkaCtx, kafkaBrokers, kafkaGroupID, TopicPointsSettle, func(ctx context.Context, value []byte) error {
+				return pointsSettle[0].ProcessPointsSettleMessage(ctx, value)
 			})
 		}()
 	}
@@ -255,6 +315,20 @@ func PublishNotificationStore(data NotificationPayload) error {
 	}
 
 	return notificationStoreWriter.WriteMessages(context.Background(), kafka.Message{Key: []byte(strconv.FormatUint(data.UserID, 10)), Value: payload})
+}
+
+func PublishPointsSettle(data *PointsSettleMsg) error {
+	if pointsSettleWriter == nil {
+		return errors.New("kafka points settle writer is not initialized")
+	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	return pointsSettleWriter.WriteMessages(context.Background(), kafka.Message{
+		Key:   []byte(strconv.FormatUint(data.UserID, 10)),
+		Value: payload,
+	})
 }
 
 func PublishSearchSync(data *models.SearchSyncPayload) error {

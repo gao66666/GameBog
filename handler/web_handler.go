@@ -57,3 +57,19 @@ func TopicDiscussPage(c *gin.Context) {
 		"TopicID": c.Param("id"),
 	})
 }
+
+func AgentPage(c *gin.Context) {
+	c.HTML(http.StatusOK, "agent.tmpl", gin.H{})
+}
+
+// GamesLibraryPage 游戏库（列表来自 /api/v1/games）
+func GamesLibraryPage(c *gin.Context) {
+	c.HTML(http.StatusOK, "game_library.tmpl", gin.H{})
+}
+
+// GameDetailPage 游戏详情（数据由前端请求 /api/v1/games/:id）
+func GameDetailPage(c *gin.Context) {
+	c.HTML(http.StatusOK, "game_detail.tmpl", gin.H{
+		"GameID": c.Param("id"),
+	})
+}

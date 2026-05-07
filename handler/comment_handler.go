@@ -2,10 +2,12 @@ package handler
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/tool"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 func (h *CommentHandler) CreateComment(c *gin.Context) {
@@ -109,4 +111,85 @@ func (h *CommentHandler) DeleteComment(c *gin.Context) {
 		return
 	}
 	tool.ResponseSuccess(c, gin.H{"commentId": strconv.FormatUint(commentID, 10)}, "删除成功")
+}
+
+// LikeCommentHandle 点赞/取消点赞评论
+func (h *CommentHandler) LikeCommentHandle(c *gin.Context) {
+	var raw struct {
+		CommentID interface{} `json:"comment_id"`
+		IsCancel  bool        `json:"is_cancel"`
+	}
+	if err := c.ShouldBindJSON(&raw); err != nil {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	var commentID uint64
+	switch v := raw.CommentID.(type) {
+	case string:
+		id, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64)
+		if err != nil || id == 0 {
+			tool.ResponseError(c, ErrCodeInvalidParam)
+			return
+		}
+		commentID = id
+	case float64:
+		if v <= 0 {
+			tool.ResponseError(c, ErrCodeInvalidParam)
+			return
+		}
+		commentID = uint64(v)
+	default:
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	userID, exists := c.Get("userID")
+	if !exists {
+		tool.ResponseError(c, ErrInvalidToken)
+		return
+	}
+
+	if err := h.se.LikeComment(commentID, userID.(uint64), raw.IsCancel); err != nil {
+		zap.L().Error("评论点赞失败", zap.Error(err))
+		tool.ResponseError(c, CodeServerBusy)
+		return
+	}
+
+	tool.ResponseSuccess(c, nil, "操作已接收")
+}
+
+// CreateCYHandle 创建 CY 评论
+func (h *CommentHandler) CreateCYHandle(c *gin.Context) {
+	p := new(models.ParamCreateCY)
+	if err := c.ShouldBindJSON(p); err != nil {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+
+	comment := &models.Comment{
+		ID:        tool.GenerateID(),
+		UserID:    c.GetUint64("userID"),
+		ArticleID: p.ArticleID,
+		Content:   p.Content,
+	}
+
+	saved, err := h.se.CreateCY(comment)
+	if err != nil {
+		tool.ResponseError(c, CodeServerBusy)
+		return
+	}
+
+	tool.ResponseSuccess(c, gin.H{"commentId": strconv.FormatUint(saved.ID, 10)}, "CY 成功")
+}
+
+// GetMyCYListHandle 获取当前用户的 CY 列表
+func (h *CommentHandler) GetMyCYListHandle(c *gin.Context) {
+	userID := c.GetUint64("userID")
+	list, err := h.se.ListMyCYForDisplay(userID)
+	if err != nil {
+		tool.ResponseError(c, CodeServerBusy)
+		return
+	}
+	tool.ResponseSuccess(c, gin.H{"list": list})
 }

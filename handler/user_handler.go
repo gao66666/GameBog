@@ -39,12 +39,20 @@ func (h *UserHandler) GetMe(c *gin.Context) {
 		return
 	}
 
+	// 余额仅查库，不走用户基础信息 Redis 缓存
+	balance, berr := h.se.GetAccountBalance(userID)
+	if berr != nil {
+		balance = 0
+	}
+
 	tool.ResponseSuccess(c, gin.H{
-		"user_id":   strconv.FormatUint(u.ID, 10),
-		"user_name": u.Name,
-		"email":     u.Email,
-		"avatar":    u.Avatar,
-		"github":    u.Github,
+		"user_id":         strconv.FormatUint(u.ID, 10),
+		"user_name":       u.Name,
+		"email":           u.Email,
+		"avatar":          u.Avatar,
+		"github":          u.Github,
+		"account_balance": balance,
+		"accountBalance":  balance,
 	}, "ok")
 }
 
@@ -149,11 +157,16 @@ func (h *UserHandler) GetUserPublic(c *gin.Context) {
 		return
 	}
 
+	_, followerCount, err := h.se.GetSocialStatsCached(uid)
+	if err != nil {
+		followerCount = int64(u.FollowingCount)
+	}
+
 	tool.ResponseSuccess(c, gin.H{
 		"user_id":        strconv.FormatUint(u.ID, 10),
 		"user_name":      u.Name,
 		"avatar":         u.Avatar,
 		"github":         u.Github,
-		"follower_count": u.FollowingCount,
+		"follower_count": uint64(followerCount),
 	}, "查询成功")
 }

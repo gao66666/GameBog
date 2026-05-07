@@ -25,6 +25,7 @@ func (r *GameRepository) InitTable() error {
 		&models.Game{},
 		&models.GameReview{},
 		&models.GameReviewComment{},
+		&models.UserGamePlay{},
 	); err != nil {
 		return ErrInitGame
 	}
@@ -90,6 +91,16 @@ func (r *GameRepository) GetReviewByID(id uint64) (*models.GameReview, error) {
 	return &review, nil
 }
 
+// GetReviewByGameAndUser 同一用户在同一游戏下是否已有点评（用于限制每人一条）
+func (r *GameRepository) GetReviewByGameAndUser(gameID, userID uint64) (*models.GameReview, error) {
+	var review models.GameReview
+	err := r.db.Where("game_id = ? AND user_id = ?", gameID, userID).First(&review).Error
+	if err != nil {
+		return nil, err
+	}
+	return &review, nil
+}
+
 func (r *GameRepository) ListReviewsByGameID(gameID uint64, page, size int) ([]*models.GameReview, int64, error) {
 	var (
 		list  []*models.GameReview
@@ -129,3 +140,47 @@ func (r *GameRepository) GetReviewCommentByID(id uint64) (*models.GameReviewComm
 }
 
 func (r *GameRepository) ListReviewComments(reviewID uint64, page, size int) ([]*models.GameReviewComment, int64, error) {
+	var (
+		list  []*models.GameReviewComment
+		total int64
+	)
+	if err := r.db.Model(&models.GameReviewComment{}).Where("review_id = ?", reviewID).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []*models.GameReviewComment{}, 0, nil
+	}
+	offset := (page - 1) * size
+	if err := r.db.Where("review_id = ?", reviewID).Order("created_at DESC").Offset(offset).Limit(size).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+// --- UserGamePlay ---
+
+func (r *GameRepository) UpsertUserGamePlay(ugp *models.UserGamePlay) error {
+	// 唯一键 (user_id, game_id)，存在则更新
+	return r.db.Save(ugp).Error
+}
+
+func (r *GameRepository) GetUserGamePlay(userID, gameID uint64) (*models.UserGamePlay, error) {
+	var ugp models.UserGamePlay
+	err := r.db.Preload("Game").Where("user_id = ? AND game_id = ?", userID, gameID).First(&ugp).Error
+	if err != nil {
+		return nil, err
+	}
+	return &ugp, nil
+}
+
+func (r *GameRepository) ListUserGamePlays(userID uint64) ([]*models.UserGamePlay, error) {
+	var list []*models.UserGamePlay
+	if err := r.db.Preload("Game").Where("user_id = ?", userID).Order("updated_at DESC").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (r *GameRepository) DeleteUserGamePlay(userID, gameID uint64) error {
+	return r.db.Where("user_id = ? AND game_id = ?", userID, gameID).Delete(&models.UserGamePlay{}).Error
+}

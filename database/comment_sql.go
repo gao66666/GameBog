@@ -4,6 +4,7 @@ import (
 	"github.com/gao66666/GoBlog/models"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type CommentRepository struct {
@@ -17,7 +18,7 @@ func NewCommentRepository(db *gorm.DB) *CommentRepository {
 
 // 初始化表结构
 func (r *CommentRepository) InitTable() error {
-	err := r.db.AutoMigrate(&models.Comment{})
+	err := r.db.AutoMigrate(&models.Comment{}, &models.CommentLike{})
 	if err != nil {
 		return ErrInitComment
 	}
@@ -28,8 +29,8 @@ func (r *CommentRepository) InitTable() error {
 // 根据parentID返回一条评论
 func (r *CommentRepository) GetCommentByID(id uint64) (*models.Comment, error) {
 	var comment models.Comment
-	// Select 指定字段（可选）：甚至可以只查 ID, UserID, RootID，性能更极致
-	err := r.db.Select("id", "user_id", "root_id").
+	// Select 指定字段
+	err := r.db.Select("id", "user_id", "root_id", "comment_type").
 		Where("id = ?", id).
 		First(&comment).Error
 
@@ -168,4 +169,62 @@ func (r *CommentRepository) CountByArticleIDs(articleIDs []uint64) (map[uint64]i
 		out[r.ArticleID] = r.Cnt
 	}
 	return out, nil
+}
+
+// EnsureCommentLikeState 确保评论点赞状态（唯一行为记录）。
+// isCancel=false: 尝试插入点赞记录；若已存在则无变化。
+// isCancel=true : 尝试删除点赞记录；若不存在则无变化。
+func (r *CommentRepository) EnsureCommentLikeState(userID, commentID uint64, isCancel bool) (changed bool, err error) {
+	if userID == 0 || commentID == 0 {
+		return false, gorm.ErrInvalidData
+	}
+
+	if !isCancel {
+		like := &models.CommentLike{UserID: userID, CommentID: commentID}
+		res := r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(like)
+		return res.RowsAffected > 0, res.Error
+	}
+
+	res := r.db.Where("user_id = ? AND comment_id = ?", userID, commentID).Delete(&models.CommentLike{})
+	return res.RowsAffected > 0, res.Error
+}
+
+// BatchIncrementCommentStats 批量更新评论点赞数。
+// deltas: map[commentID]delta（+1 或 -1）
+func (r *CommentRepository) BatchIncrementCommentStats(deltas map[uint64]int) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		for id, delta := range deltas {
+			if delta == 0 {
+				continue
+			}
+			if err := tx.Model(&models.Comment{}).
+				Where("id = ?", id).
+				UpdateColumn("like_count", gorm.Expr("like_count + ?", delta)).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// ListCYByUserID 获取用户的所有 CY 评论。
+func (r *CommentRepository) ListCYByUserID(userID uint64) ([]*models.Comment, error) {
+	var list []*models.Comment
+	err := r.db.Preload("User").
+		Where("user_id = ? AND comment_type = 'cy'", userID).
+		Order("created_at DESC").
+		Find(&list).Error
+	return list, err
+}
+
+// GetCYCommentIDsByArticle 获取一篇文章下所有 CY 评论的 ID 集合。
+func (r *CommentRepository) GetCYCommentIDsByArticle(articleID uint64) ([]uint64, error) {
+	var ids []uint64
+	err := r.db.Model(&models.Comment{}).
+		Where("article_id = ? AND comment_type = 'cy'", articleID).
+		Pluck("id", &ids).Error
+	return ids, err
 }

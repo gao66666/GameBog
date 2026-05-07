@@ -1,6 +1,13 @@
 (function () {
     const { qs, api, getAuth } = window.GoBlog;
 
+    const DEFAULT_ARTICLE_COVER = 'https://pic4.zhimg.com/v2-cad31f1efa6d4940651ebec9063fd5cb_r.jpg';
+
+    function pickArticleCoverUrl(a) {
+        const u = String((a && (a.coverUrl || a.cover_url)) || '').trim();
+        return /^https?:\/\//i.test(u) ? u : DEFAULT_ARTICLE_COVER;
+    }
+
     function fmtTime(iso) {
         try {
             const d = new Date(iso);
@@ -50,13 +57,21 @@
             }
             emptyEl.style.display = 'none';
 
-            list.forEach((a) => {
+            list.forEach((a, idx) => {
                 const li = document.createElement('li');
-                li.appendChild(articleLink(a.id, a.title));
+                li.className = 'home-lb-row';
+                const rank = document.createElement('span');
+                rank.className = 'home-lb-rank';
+                rank.textContent = String(idx + 1);
+                const body = document.createElement('div');
+                body.className = 'home-lb-body';
+                body.appendChild(articleLink(a.id, a.title));
                 const meta = document.createElement('div');
-                meta.className = 'muted';
+                meta.className = 'home-lb-meta';
                 meta.innerHTML = renderStats(a.viewCount, a.likeCount, a.commentCount);
-                if (meta.innerHTML) li.appendChild(meta);
+                if (meta.innerHTML) body.appendChild(meta);
+                li.appendChild(rank);
+                li.appendChild(body);
                 listEl.appendChild(li);
             });
         } catch (e) {
@@ -66,7 +81,7 @@
         }
     }
 
-    // 最新博客
+    // 最新文章
     let latestScope = 'all'; // all | follow
     let latestPage = 1;
     const latestSize = 6;
@@ -165,25 +180,37 @@
 
             list.forEach((a) => {
                 const div = document.createElement('div');
-                div.className = 'item';
+                div.className = 'home-feed-item';
+
+                const thumb = document.createElement('img');
+                thumb.className = 'home-feed-thumb';
+                thumb.src = pickArticleCoverUrl(a);
+                thumb.alt = '';
+                thumb.loading = 'lazy';
+                div.appendChild(thumb);
+
+                const main = document.createElement('div');
+                main.className = 'home-feed-main';
 
                 const title = document.createElement('div');
+                title.className = 'home-feed-title';
                 title.appendChild(articleLink(a.id, a.title));
 
                 const summary = document.createElement('div');
-                summary.className = 'muted';
-                summary.textContent = String(a.summary || '').slice(0, 160);
+                summary.className = 'home-feed-summary';
+                summary.textContent = String(a.summary || '').slice(0, 200);
 
                 const meta = document.createElement('div');
-                meta.className = 'muted';
+                meta.className = 'home-feed-meta';
                 const t = fmtTime(a.createdAt);
                 const prefix = t ? (t + ' · ') : '';
                 const stats = renderStats(a.viewCount, a.likeCount, a.commentCount);
                 meta.innerHTML = prefix + stats;
 
-                div.appendChild(title);
-                if (summary.textContent) div.appendChild(summary);
-                if (meta.innerHTML) div.appendChild(meta);
+                main.appendChild(title);
+                if (summary.textContent) main.appendChild(summary);
+                if (meta.innerHTML) main.appendChild(meta);
+                div.appendChild(main);
                 root.appendChild(div);
             });
 

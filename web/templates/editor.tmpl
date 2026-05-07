@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>GoBlog - 编辑文章</title>
+  <title>GameBog - 编辑文章</title>
   <link rel="stylesheet" href="/static/styles.css" />
   <link rel="stylesheet" href="/static/editor.css" />
   <link rel="stylesheet" href="/static/vendor/hljs-github-dark-dimmed.min.css" />
@@ -11,10 +11,11 @@
 <body class="page-editor">
   <header class="topbar">
     <div class="container row">
-      <div class="brand"><a href="/">GoBlog</a></div>
+      <div class="brand"><a href="/">GameBog</a></div>
       <nav class="nav">
         <a href="/" id="navHome">首页</a>
         <a href="/topics" id="navTopics">话题</a>
+        <a href="/game-library" id="navGameLibrary">游戏库</a>
         <a href="/me" id="navMe">个人中心</a>
         <a href="/login" id="navLogin">登录</a>
       </nav>
@@ -60,6 +61,12 @@
         <label>
           <div class="label">摘要（必填）</div>
           <textarea id="editorSummaryInput" maxlength="500" placeholder="请输入摘要（用于列表/搜索展示）" style="min-height:88px"></textarea>
+        </label>
+
+        <label>
+          <div class="label">封面图链接（可选）</div>
+          <input type="url" id="editorCoverInput" maxlength="512" placeholder="https://（网络图床 HTTPS 外链；留空使用默认封面）" />
+          <div class="muted" style="margin-top:6px">仅支持网络图片 URL，不接受本地上传。</div>
         </label>
 
         <div class="editor-frame">

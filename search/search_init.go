@@ -52,6 +52,7 @@ func Init(host, apiKey, index string) {
 	client = es
 	indexName = index
 	ensureIndex()
+	ensureCNFriendlySubfields()
 }
 
 func ensureIndex() {
@@ -64,21 +65,31 @@ func ensureIndex() {
 
 	existsRes, err := client.Indices.Exists([]string{indexName}, client.Indices.Exists.WithContext(ctx))
 	if err == nil {
-		_ = existsRes.Body.Close()
+		defer existsRes.Body.Close()
 		if existsRes.StatusCode == 200 {
 			return
 		}
 	}
 
-	// 最小可用 mapping：文本字段用 text，tags 用 keyword 数组
+	// text + keyword 子字段：wildcard 可在整段标题/摘要上做子串匹配，弥补 standard 分词对中文不友好的问题。
 	mapping := `{
 	  "mappings": {
 	    "properties": {
 	      "id": {"type": "keyword"},
-	      "title": {"type": "text"},
+	      "title": {
+	        "type": "text",
+	        "fields": {
+	          "raw": {"type": "keyword", "ignore_above": 4096}
+	        }
+	      },
 	      "author_name": {"type": "text"},
 	      "tags": {"type": "keyword"},
-	      "summary": {"type": "text"}
+	      "summary": {
+	        "type": "text",
+	        "fields": {
+	          "raw": {"type": "keyword", "ignore_above": 8192}
+	        }
+	      }
 	    }
 	  }
 	}`
@@ -89,6 +100,45 @@ func ensureIndex() {
 		return
 	}
 	_ = createRes.Body.Close()
+}
+
+// ensureCNFriendlySubfields 为已存在的索引补充 title.raw / summary.raw（仅 additive，失败则忽略）。
+func ensureCNFriendlySubfields() {
+	if !Enabled() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	body := `{
+	  "properties": {
+	    "title": {
+	      "type": "text",
+	      "fields": {
+	        "raw": {"type": "keyword", "ignore_above": 4096}
+	      }
+	    },
+	    "summary": {
+	      "type": "text",
+	      "fields": {
+	        "raw": {"type": "keyword", "ignore_above": 8192}
+	      }
+	    }
+	  }
+	}`
+	res, err := client.Indices.PutMapping(
+		[]string{indexName},
+		strings.NewReader(body),
+		client.Indices.PutMapping.WithContext(ctx),
+	)
+	if err != nil {
+		zap.L().Debug("Elasticsearch put mapping (cn subfields)", zap.Error(err))
+		return
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		b, _ := io.ReadAll(res.Body)
+		zap.L().Debug("Elasticsearch put mapping not applied", zap.ByteString("body", b))
+	}
 }
 
 func UpsertArticle(ctx context.Context, p models.SearchSyncPayload) error {
@@ -120,6 +170,13 @@ func UpsertArticle(ctx context.Context, p models.SearchSyncPayload) error {
 	return nil
 }
 
+func escapeWildcardQuery(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `*`, `\*`)
+	s = strings.ReplaceAll(s, `?`, `\?`)
+	return s
+}
+
 func SearchArticles(ctx context.Context, query string, limit int) ([]map[string]any, error) {
 	if !Enabled() {
 		return nil, errors.New("search is not enabled")
@@ -128,13 +185,44 @@ func SearchArticles(ctx context.Context, query string, limit int) ([]map[string]
 		limit = 20
 	}
 
-	// multi_match：对 title/author_name/tags/summary 做全文检索
-	q := map[string]any{
-		"size": limit,
-		"query": map[string]any{
+	trimmed := strings.TrimSpace(query)
+	should := []any{
+		map[string]any{
 			"multi_match": map[string]any{
 				"query":  query,
 				"fields": []string{"title^3", "author_name", "tags", "summary"},
+			},
+		},
+	}
+	if trimmed != "" {
+		w := "*" + escapeWildcardQuery(trimmed) + "*"
+		should = append(should,
+			map[string]any{
+				"wildcard": map[string]any{
+					"title.raw": map[string]any{
+						"value":            w,
+						"case_insensitive": true,
+					},
+				},
+			},
+			map[string]any{
+				"wildcard": map[string]any{
+					"summary.raw": map[string]any{
+						"value":            w,
+						"case_insensitive": true,
+					},
+				},
+			},
+		)
+	}
+
+	// bool：全文 + title.raw/summary.raw 子串（利于中文）；未重建索引的旧文档可能仅有 multi_match 命中。
+	q := map[string]any{
+		"size": limit,
+		"query": map[string]any{
+			"bool": map[string]any{
+				"should":               should,
+				"minimum_should_match": 1,
 			},
 		},
 	}
