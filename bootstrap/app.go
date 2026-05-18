@@ -65,6 +65,7 @@ func Init(configPath string) (*Runtime, error) {
 		mq.InitNSQ(nsqCfg.Addr, dbClient, redisClient, mq.WorkerFlushOptions{
 			StatsInterval:   time.Duration(nsqCfg.StatsFlushSeconds) * time.Second,
 			StatsMaxKeys:    nsqCfg.StatsFlushMaxKeys,
+			StatsShardCount: nsqCfg.StatsShardCount,
 			CommentInterval: time.Duration(nsqCfg.CommentFlushSeconds) * time.Second,
 			CommentMaxKeys:  nsqCfg.CommentFlushMaxKeys,
 		})

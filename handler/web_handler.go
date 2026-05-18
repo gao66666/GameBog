@@ -2,74 +2,94 @@ package handler
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/gin-gonic/gin"
 )
 
+const vueDistIndex = "webapp/dist/index.html"
+
+// VueSPAReady 是否已构建 Vue 前端（webapp/dist/index.html 存在）。
+func VueSPAReady() bool {
+	_, err := os.Stat(vueDistIndex)
+	return err == nil
+}
+
+// ServeVueSPA 返回 Vue 构建产物入口（需先 cd webapp && npm run build）。
+func ServeVueSPA(c *gin.Context) {
+	if !VueSPAReady() {
+		c.String(http.StatusServiceUnavailable, "Vue 前端未构建：请在 webapp 目录执行 npm install && npm run build")
+		return
+	}
+	c.File(vueDistIndex)
+}
+
+func servePage(c *gin.Context, tmpl string, data gin.H) {
+	if VueSPAReady() {
+		ServeVueSPA(c)
+		return
+	}
+	c.HTML(http.StatusOK, tmpl, data)
+}
+
 func HomePage(c *gin.Context) {
-	c.HTML(http.StatusOK, "home.tmpl", gin.H{})
+	servePage(c, "home.tmpl", gin.H{})
 }
 
 func LoginPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "login.tmpl", gin.H{})
+	servePage(c, "login.tmpl", gin.H{})
 }
 
 func MePage(c *gin.Context) {
-	c.HTML(http.StatusOK, "me.tmpl", gin.H{})
+	servePage(c, "me.tmpl", gin.H{})
 }
 
 func UserPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "user.tmpl", gin.H{
-		"UserID": c.Param("id"),
-	})
+	servePage(c, "user.tmpl", gin.H{"UserID": c.Param("id")})
 }
 
 func DMPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "dm.tmpl", gin.H{
-		"PeerID": c.Query("peer_id"),
-	})
+	servePage(c, "dm.tmpl", gin.H{"PeerID": c.Query("peer_id")})
 }
 
 func ArticlePage(c *gin.Context) {
-	c.HTML(http.StatusOK, "article.tmpl", gin.H{
-		"ArticleID": c.Param("id"),
-	})
+	servePage(c, "article.tmpl", gin.H{"ArticleID": c.Param("id")})
 }
 
 func EditorPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "editor.tmpl", gin.H{
-		"ArticleID": c.Query("id"),
-	})
+	servePage(c, "editor.tmpl", gin.H{"ArticleID": c.Query("id")})
 }
 
 func TopicsPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "topics.tmpl", gin.H{})
+	servePage(c, "topics.tmpl", gin.H{})
 }
 
 func TopicPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "topic.tmpl", gin.H{
-		"TopicID": c.Param("id"),
-	})
+	servePage(c, "topic.tmpl", gin.H{"TopicID": c.Param("id")})
 }
 
 func TopicDiscussPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "topic_discuss.tmpl", gin.H{
-		"TopicID": c.Param("id"),
-	})
+	servePage(c, "topic_discuss.tmpl", gin.H{"TopicID": c.Param("id")})
 }
 
 func AgentPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "agent.tmpl", gin.H{})
+	servePage(c, "agent.tmpl", gin.H{})
 }
 
-// GamesLibraryPage 游戏库（列表来自 /api/v1/games）
 func GamesLibraryPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "game_library.tmpl", gin.H{})
+	servePage(c, "game_library.tmpl", gin.H{})
 }
 
-// GameDetailPage 游戏详情（数据由前端请求 /api/v1/games/:id）
 func GameDetailPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "game_detail.tmpl", gin.H{
-		"GameID": c.Param("id"),
-	})
+	servePage(c, "game_detail.tmpl", gin.H{"GameID": c.Param("id")})
+}
+
+// RegisterVueAssets 挂载 Vite 构建的 /assets（若存在）。
+func RegisterVueAssets(r *gin.Engine) {
+	assetsDir := filepath.Join("webapp", "dist", "assets")
+	if st, err := os.Stat(assetsDir); err != nil || !st.IsDir() {
+		return
+	}
+	r.Static("/assets", assetsDir)
 }

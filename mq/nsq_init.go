@@ -20,6 +20,7 @@ var producer *nsq.Producer
 type WorkerFlushOptions struct {
 	StatsInterval   time.Duration
 	StatsMaxKeys    int
+	StatsShardCount int
 	CommentInterval time.Duration
 	CommentMaxKeys  int
 }
@@ -37,7 +38,7 @@ func InitNSQ(addr string, db *gorm.DB, rdb *redis.Client, flush WorkerFlushOptio
 
 	// 2. 注册：文章统计消费者 (处理点赞、阅读量)
 	articleRepo := database.NewArticleRepository(db)
-	worker := NewStatsWorker(articleRepo, flush.StatsInterval, flush.StatsMaxKeys)
+	worker := NewStatsWorker(articleRepo, flush.StatsInterval, flush.StatsMaxKeys, flush.StatsShardCount)
 	worker.StartFlushTicks()
 	registerConsumer(addr, "article_stats", "stats_sync_group", worker)
 
@@ -50,6 +51,7 @@ func InitNSQ(addr string, db *gorm.DB, rdb *redis.Client, flush WorkerFlushOptio
 	zap.L().Info("所有 NSQ 服务初始化完成",
 		zap.Duration("stats_flush_interval", flush.StatsInterval),
 		zap.Int("stats_flush_max_keys", flush.StatsMaxKeys),
+		zap.Int("stats_shard_count", worker.shardCount),
 		zap.Duration("comment_flush_interval", flush.CommentInterval),
 		zap.Int("comment_flush_max_keys", flush.CommentMaxKeys))
 }

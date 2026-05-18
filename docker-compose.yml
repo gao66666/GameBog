@@ -42,6 +42,41 @@ services:
         condition: service_started
     command: sh -c "go mod download && go run main.go"
 
+  # Vue 前端开发：Vite 热更新，无需本机安装 Node/npm
+  webapp-dev:
+    profiles:
+      - dev
+    image: node:22-alpine
+    container_name: goblog-webapp-dev
+    working_dir: /app
+    volumes:
+      - ./webapp:/app
+      - ./web:/web
+      - webapp-node-modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      - NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+      - VITE_DEV_API_TARGET=http://dev:8084
+    depends_on:
+      - dev
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+
+  # 一次性构建 Vue 产物到 webapp/dist（供 Go 在 8084 托管 SPA）
+  # 用法: docker compose --profile dev run --rm webapp-build
+  webapp-build:
+    profiles:
+      - dev
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ./webapp:/app
+      - ./web:/web
+      - webapp-node-modules:/app/node_modules
+    environment:
+      - NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+    command: sh -c "npm install && npm run build"
+
   # GoBlog API（Golang）
   app:
     profiles:
@@ -190,11 +225,7 @@ services:
       - "9092:9092"
     # 可选：仅用于 docker ps 展示健康状态；PATH 可能无 kafka 脚本，故用容器内绝对路径
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "/opt/kafka/bin/kafka-broker-api-versions --bootstrap-server 127.0.0.1:9092 >/dev/null 2>&1 || exit 1",
-        ]
+      test: [ "CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions --bootstrap-server 127.0.0.1:9092 >/dev/null 2>&1 || exit 1" ]
       interval: 10s
       timeout: 10s
       retries: 6
@@ -288,3 +319,4 @@ volumes:
   kafka_data:
   es_data:
   go-mod-cache:
+  webapp-node-modules:

@@ -83,6 +83,8 @@ type NSQConfig struct {
 	StatsFlushSeconds int `mapstructure:"stats_flush_seconds"`
 	// StatsFlushMaxKeys 文章统计 buffer 内「待刷新的 key 数」近似上限（len(view)+len(like)），达到后触发 flush，避免单次事务过大。<=0 时默认 2000。
 	StatsFlushMaxKeys int `mapstructure:"stats_flush_max_keys"`
+	// StatsShardCount NSQ 统计消费者分片数（按 article_id 哈希），降低单锁竞争。<=0 时默认 16。
+	StatsShardCount int `mapstructure:"stats_shard_count"`
 	// CommentFlushSeconds 评论点赞统计落库周期（秒）。<=0 时与 StatsFlushSeconds 相同。
 	CommentFlushSeconds int `mapstructure:"comment_flush_seconds"`
 	// CommentFlushMaxKeys 评论点赞 buffer 上限。<=0 时与 StatsFlushMaxKeys 相同。
@@ -214,6 +216,9 @@ func setDefaults() {
 	}
 	if Conf.NSQConfig.StatsFlushMaxKeys <= 0 {
 		Conf.NSQConfig.StatsFlushMaxKeys = 2000
+	}
+	if Conf.NSQConfig.StatsShardCount <= 0 {
+		Conf.NSQConfig.StatsShardCount = 16
 	}
 	if Conf.NSQConfig.CommentFlushSeconds <= 0 {
 		Conf.NSQConfig.CommentFlushSeconds = Conf.NSQConfig.StatsFlushSeconds

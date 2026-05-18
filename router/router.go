@@ -176,6 +176,7 @@ func RouterInit(mode string, app *App) *gin.Engine {
 	// 页面模板与静态资源（最小前端）
 	r.LoadHTMLGlob("web/templates/*.tmpl")
 	r.Static("/static", "web/static")
+	handler.RegisterVueAssets(r)
 	r.GET("/favicon.ico", func(c *gin.Context) {
 		c.File("web/static/favicon.svg")
 	})

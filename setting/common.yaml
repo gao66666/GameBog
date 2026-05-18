@@ -44,6 +44,7 @@ mq:
     addr: "127.0.0.1:4150"
     stats_flush_seconds: 60
     stats_flush_max_keys: 2000
+    stats_shard_count: 16
     comment_flush_seconds: 60
     comment_flush_max_keys: 2000
 
