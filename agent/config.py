@@ -5,7 +5,81 @@
 import os
 import yaml
 
+_AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
+_CONFIG_YAML = os.path.join(_AGENT_DIR, "config.yaml")
+_PROMPTS_YAML = os.path.join(_AGENT_DIR, "prompts.yaml")
+
 _CONFIG = None
+
+_PROMPTS_CACHE: dict | None = None
+_PROMPTS_MTIME: float | None = None
+
+_REQUIRED_PROMPT_KEYS = (
+    "routing",
+    "system",
+    "analysis_pre",
+    "plan",
+    "analysis_close",
+    "server_summaries",
+)
+
+
+def _validate_prompts_blob(blob: dict) -> bool:
+    if not isinstance(blob, dict):
+        return False
+    for k in _REQUIRED_PROMPT_KEYS:
+        if k == "server_summaries":
+            ss = blob.get("server_summaries")
+            if not isinstance(ss, dict):
+                return False
+            for g in ("public", "user"):
+                meta = ss.get(g)
+                if not isinstance(meta, dict):
+                    return False
+                if not str(meta.get("description", "")).strip():
+                    return False
+            continue
+        v = blob.get(k)
+        if not isinstance(v, str) or not v.strip():
+            return False
+    ap = blob.get("analysis_pre", "")
+    if "{tools_short_catalog}" not in ap:
+        return False
+    pl = blob.get("plan", "")
+    if "{tools_detail}" not in pl:
+        return False
+    return True
+
+
+def get_prompts() -> dict:
+    """读取 agent/prompts.yaml；按文件 mtime 热更新（无需重启进程）。返回只读 dict，请勿原地修改。"""
+    global _PROMPTS_CACHE, _PROMPTS_MTIME
+    try:
+        mtime = os.path.getmtime(_PROMPTS_YAML)
+    except OSError:
+        if _PROMPTS_CACHE is not None:
+            return _PROMPTS_CACHE
+        raise FileNotFoundError(f"缺少提示词文件: {_PROMPTS_YAML}") from None
+
+    if _PROMPTS_CACHE is not None and _PROMPTS_MTIME == mtime:
+        return _PROMPTS_CACHE
+
+    try:
+        with open(_PROMPTS_YAML, "r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f) or {}
+    except Exception:
+        if _PROMPTS_CACHE is not None:
+            return _PROMPTS_CACHE
+        raise
+
+    if not _validate_prompts_blob(loaded):
+        if _PROMPTS_CACHE is not None:
+            return _PROMPTS_CACHE
+        raise ValueError("prompts.yaml 结构不完整或字段为空，请对照仓库内默认 prompts.yaml 检查")
+
+    _PROMPTS_CACHE = loaded
+    _PROMPTS_MTIME = mtime
+    return _PROMPTS_CACHE
 
 
 def load_config() -> dict:
@@ -14,9 +88,7 @@ def load_config() -> dict:
     if _CONFIG is not None:
         return _CONFIG
 
-    # 从 agent 目录读取 config.yaml
-    yaml_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-    yaml_path = os.path.abspath(yaml_path)
+    yaml_path = _CONFIG_YAML
 
     with open(yaml_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -29,6 +101,7 @@ def load_config() -> dict:
     qdrant_cfg = data.get("qdrant", {})
     mongo_cfg = data.get("mongo", {})
     memory_cfg = data.get("memory", {})
+    orchestration_cfg = data.get("orchestration", {})
     embed_cfg = data.get("embedding", {})
     blog_api_url = data.get("blog_api_url", "http://127.0.0.1:8084/api/v1")
 
@@ -101,6 +174,13 @@ def load_config() -> dict:
             "mongo_retrieval_candidate_cap": int(memory_cfg.get("mongo_retrieval_candidate_cap", 80)),
         },
         "document_ingest_secret": document_ingest_secret,
+        "orchestration": {
+            "post_turn_async_log": bool(orchestration_cfg.get("post_turn_async_log", True)),
+            "planning_round_enabled": bool(orchestration_cfg.get("planning_round_enabled", True)),
+            "reflection_llm_enabled": bool(orchestration_cfg.get("reflection_llm_enabled", False)),
+            "reflection_max_user_chars": int(orchestration_cfg.get("reflection_max_user_chars", 4000)),
+            "reflection_max_assistant_chars": int(orchestration_cfg.get("reflection_max_assistant_chars", 8000)),
+        },
         "decision_llm": {
             "base_url": decision_llm_cfg.get("base_url", memory_manager_llm_cfg.get("base_url", summary_llm_cfg.get("base_url", llm_cfg.get("base_url", "https://api.openai.com/v1")))),
             "api_key": decision_llm_cfg.get("api_key", memory_manager_llm_cfg.get("api_key", summary_llm_cfg.get("api_key", llm_cfg.get("api_key", "sk-your-key-here")))),

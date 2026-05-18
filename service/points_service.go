@@ -1,8 +1,8 @@
 package service
 
 import (
-	"context"
-	"encoding/json"
+	"errors"
+	"strconv"
 	"time"
 
 	"github.com/gao66666/GoBlog/database"
@@ -40,78 +40,50 @@ func NewPointsService(db *gorm.DB, pointsDB *database.PointsRepository, pointsRe
 	}
 }
 
-// EarnPoints 获取积分（由业务层在业务成功后调用）
-// - 检查 Redis 每日上限
-// - 同一事务：插入 outbox（不直接更新余额，由 Kafka 消费者异步落账）
+// EarnPoints 获取积分（由业务层在业务成功后调用）。
+// 幂等：txn_id 为流水表主键；事务内先插流水再改余额，冲突则视为已入账；Redis 日上限前用 TxnIDExists 避免重复消费多扣次数。
 func (s *PointsService) EarnPoints(userID uint64, refType string, refID uint64) error {
+	return s.earnPoints(userID, refType, refID, 0)
+}
+
+// EarnPointsWithTxnID 与 EarnPoints 相同，但指定稳定 txn_id（如 Kafka 消息携带）；传 0 则与 EarnPoints 一样现场生成 Snowflake。
+func (s *PointsService) EarnPointsWithTxnID(userID uint64, refType string, refID uint64, txnID uint64) error {
+	return s.earnPoints(userID, refType, refID, txnID)
+}
+
+func (s *PointsService) earnPoints(userID uint64, refType string, refID uint64, txnIDOrZero uint64) error {
 	rule, ok := PointsRules[refType]
 	if !ok {
 		zap.L().Warn("未知积分类型", zap.String("ref_type", refType))
-		return nil // 未知类型直接跳过，不影响主业务
+		return nil
 	}
 
-	// 1. Redis 检查每日上限
+	txnID := txnIDOrZero
+	if txnID == 0 {
+		txnID = tool.GenerateID()
+	}
+
+	exists, err := s.pointsDB.TxnIDExists(txnID)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
 	if _, err := s.pointsRedis.CheckAndIncrDailyLimit(userID, refType, rule.DailyLimit); err != nil {
 		return err
 	}
 
-	// 2. 同一事务插入 outbox
-	outbox := &models.PointsOutbox{
-		ID:          tool.GenerateID(),
-		UserID:      userID,
-		Amount:      rule.Amount,
-		RefType:     refType,
-		RefID:       refID,
-		Description: rule.Desc,
-		Status:      models.PointsOutboxStatusPending,
-	}
-
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		// 确保钱包存在
-		_, err := s.pointsDB.GetWalletByUserIDTx(tx, userID)
+		wallet, err := s.pointsDB.GetWalletByUserIDTx(tx, userID)
 		if err != nil {
 			if err == database.ErrWalletNotFound {
-				// 自动创建钱包
-				wallet := &models.UserWallet{
-					UserID: userID,
-				}
+				wallet = &models.UserWallet{UserID: userID}
 				if createErr := tx.Create(wallet).Error; createErr != nil {
 					return createErr
 				}
-			} else {
-				return err
-			}
-		}
-		return s.pointsDB.InsertOutbox(tx, outbox)
-	}); err != nil {
-		// 事务失败 → 回滚 Redis 计数器
-		_ = s.pointsRedis.RollbackDailyLimit(userID, refType)
-		return err
-	}
-
-	return nil
-}
-
-// ProcessPointsSettle Kafka 消费者处理积分结算
-// 在事务中：更新余额（乐观锁）+ 记流水
-func (s *PointsService) ProcessPointsSettleMessage(ctx context.Context, payload []byte) error {
-	var msg mq.PointsSettleMsg
-	if err := json.Unmarshal(payload, &msg); err != nil {
-		zap.L().Error("积分消息反序列化失败", zap.Error(err))
-		return err
-	}
-
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		// 1. 获取钱包（乐观锁读）
-		wallet, err := s.pointsDB.GetWalletByUserIDTx(tx, msg.UserID)
-		if err != nil {
-			if err == database.ErrWalletNotFound {
-				wallet = &models.UserWallet{UserID: msg.UserID}
-				if createErr := tx.Create(wallet).Error; createErr != nil {
-					return createErr
-				}
-				// 重新读一遍获得 version
-				wallet, err = s.pointsDB.GetWalletByUserIDTx(tx, msg.UserID)
+				wallet, err = s.pointsDB.GetWalletByUserIDTx(tx, userID)
 				if err != nil {
 					return err
 				}
@@ -120,85 +92,87 @@ func (s *PointsService) ProcessPointsSettleMessage(ctx context.Context, payload 
 			}
 		}
 
-		// 2. 更新余额（乐观锁）
-		if err := s.pointsDB.UpdateBalance(tx, msg.UserID, msg.Amount, wallet.Version); err != nil {
-			// 乐观锁冲突或余额不足 → 重试由 Kafka 重试机制保证
-			return err
-		}
-
-		// 3. 计算新余额
-		newBalance := wallet.Balance + msg.Amount
-
-		// 4. 记录流水
+		newBalance := wallet.Balance + rule.Amount
 		txn := &models.PointsTransaction{
-			TxnID:        msg.TxnID,
-			UserID:       msg.UserID,
-			Amount:       msg.Amount,
-			Type:         msg.Type,
-			RefType:      msg.RefType,
-			RefID:        msg.RefID,
+			TxnID:        txnID,
+			UserID:       userID,
+			Amount:       rule.Amount,
+			Type:         "income",
+			RefType:      refType,
+			RefID:        refID,
 			BalanceAfter: newBalance,
-			Description:  msg.Description,
+			Description:  rule.Desc,
 			CreatedAt:    time.Now(),
 		}
-		return s.pointsDB.InsertTransaction(tx, txn)
-	})
+		inserted, err := s.pointsDB.TryInsertTransaction(tx, txn)
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			return database.ErrPointsTxnIdempotentSkip
+		}
+		return s.pointsDB.UpdateBalance(tx, userID, rule.Amount, wallet.Version)
+	}); err != nil {
+		if errors.Is(err, database.ErrPointsTxnIdempotentSkip) {
+			_ = s.pointsRedis.RollbackDailyLimit(userID, refType)
+			return nil
+		}
+		_ = s.pointsRedis.RollbackDailyLimit(userID, refType)
+		return err
+	}
+
+	return nil
 }
 
-// StartOutboxScanner 启动 Outbox 扫描器（后台 goroutine）
-// 定期扫描 pending 消息，发送到 Kafka
-func (s *PointsService) StartOutboxScanner() {
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
+// EnqueueEarn 统一入账入口：Kafka 开启则投递 points.earn，由消费端 EarnPointsWithTxnID 幂等落库；投递失败或未启用 Kafka 则同步入账。
+// salt：区分同 ref 下多次合法入账（如点赞者 user_id）；无则传 0。ref_type 不在 PointsRules 内则直接忽略。
+func (s *PointsService) EnqueueEarn(userID uint64, refType string, refID uint64, salt uint64) error {
+	if _, ok := PointsRules[refType]; !ok {
+		return nil
+	}
+	txnID := tool.PointsStableTxnID(userID, refType, refID, salt)
+	if mq.PointsEarnKafkaAvailable() {
+		err := mq.PublishPointsEarn(&mq.PointsEarnPayload{
+			UserID:  userID,
+			RefType: refType,
+			RefID:   refID,
+			TxnID:   txnID,
+		})
+		if err != nil {
+			zap.L().Warn("积分入账 Kafka 投递失败，降级同步入账", zap.String("ref_type", refType), zap.Uint64("user_id", userID), zap.Error(err))
+			return s.EarnPointsWithTxnID(userID, refType, refID, txnID)
+		}
+		return nil
+	}
+	return s.EarnPointsWithTxnID(userID, refType, refID, txnID)
+}
 
-		zap.L().Info("积分 Outbox 扫描器已启动")
-		for range ticker.C {
-			s.scanAndPublish()
+// StartReconcileTicker 定期比对「流水 Σ amount」与钱包 balance，打日志兜底。
+func (s *PointsService) StartReconcileTicker() {
+	if s == nil || s.pointsDB == nil {
+		return
+	}
+	go func() {
+		tick := time.NewTicker(1 * time.Hour)
+		defer tick.Stop()
+		run := func() {
+			rows, err := s.pointsDB.ListWalletLedgerMismatches(200)
+			if err != nil {
+				zap.L().Warn("积分对账查询失败", zap.Error(err))
+				return
+			}
+			for _, row := range rows {
+				zap.L().Warn("积分对账不一致",
+					zap.Uint64("user_id", row.UserID),
+					zap.Int64("wallet_balance", row.Balance),
+					zap.Int64("ledger_sum", row.LedgerSum))
+			}
+		}
+		run()
+		for range tick.C {
+			run()
 		}
 	}()
-}
-
-func (s *PointsService) scanAndPublish() {
-	messages, err := s.pointsDB.GetPendingOutbox(50)
-	if err != nil {
-		zap.L().Error("获取待发送积分消息失败", zap.Error(err))
-		return
-	}
-	if len(messages) == 0 {
-		return
-	}
-
-	for _, msg := range messages {
-		txnType := "income"
-		if msg.Amount < 0 {
-			txnType = "expense"
-		}
-
-		kafkaMsg := &mq.PointsSettleMsg{
-			TxnID:       msg.ID,
-			UserID:      msg.UserID,
-			Amount:      msg.Amount,
-			RefType:     msg.RefType,
-			RefID:       msg.RefID,
-			Type:        txnType,
-			Description: msg.Description,
-		}
-
-		if err := mq.PublishPointsSettle(kafkaMsg); err != nil {
-			zap.L().Error("发送积分消息到 Kafka 失败",
-				zap.Uint64("outbox_id", msg.ID),
-				zap.Error(err))
-			_ = s.pointsDB.MarkOutboxFailed(msg.ID)
-			continue
-		}
-
-		if err := s.pointsDB.MarkOutboxSent(msg.ID); err != nil {
-			zap.L().Error("标记 Outbox 已发送失败",
-				zap.Uint64("outbox_id", msg.ID),
-				zap.Error(err))
-		}
-	}
 }
 
 // GetWallet 获取用户积分账户
@@ -206,11 +180,8 @@ func (s *PointsService) GetWallet(userID uint64) (*models.UserWallet, error) {
 	return s.pointsDB.GetWallet(userID)
 }
 
-// Checkin 签到
-// 1. Redis Bitmap 查重
-// 2. 走 EarnPoints 流程
+// Checkin 签到：Bitmap 查重 → 标记 → 入账（经 EnqueueEarn，与业务发分同链）
 func (s *PointsService) Checkin(userID uint64) error {
-	// 1. 查重
 	ok, err := s.pointsRedis.HasCheckedIn(userID)
 	if err != nil {
 		return err
@@ -219,15 +190,13 @@ func (s *PointsService) Checkin(userID uint64) error {
 		return tool.NewBizError(400, 40030, "今天已经签到过了")
 	}
 
-	// 2. 记录签到到 Redis Bitmap
 	if _, err := s.pointsRedis.MarkCheckin(userID); err != nil {
 		return err
 	}
 
-	// 3. 走积分流程
-	if err := s.EarnPoints(userID, "checkin", 0); err != nil {
-		return err
+	dayKey, err := strconv.ParseUint(time.Now().Format("20060102"), 10, 64)
+	if err != nil {
+		dayKey = 0
 	}
-
-	return nil
+	return s.EnqueueEarn(userID, "checkin", 0, dayKey)
 }

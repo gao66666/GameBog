@@ -46,13 +46,14 @@ func Init(configPath string) (*Runtime, error) {
 
 	dbClient := database.MysqlInit(setting.Conf.MySQLConfig)
 	app := router.SetupApp(dbClient, redisClient)
+	app.StartPeriodicJobs()
 
 	if setting.Conf.SearchConfig.Enabled {
 		search.Init(setting.Conf.SearchConfig.Host, setting.Conf.SearchConfig.APIKey, setting.Conf.SearchConfig.Index)
 	}
 
 	if setting.Conf.KafkaConfig.Enabled {
-		if err := mq.InitKafka(setting.Conf.KafkaConfig.Brokers, setting.Conf.KafkaConfig.GroupID); err != nil {
+		if err := mq.InitKafka(setting.Conf.KafkaConfig.Brokers, setting.Conf.KafkaConfig.GroupID, setting.Conf.KafkaConfig.PointsEarnMaxRetries); err != nil {
 			return nil, fmt.Errorf("init kafka: %w", err)
 		}
 		app.StartWorkers()
@@ -60,7 +61,13 @@ func Init(configPath string) (*Runtime, error) {
 	}
 
 	if setting.Conf.NSQConfig.Enabled {
-		mq.InitNSQ(setting.Conf.NSQConfig.Addr, dbClient, redisClient)
+		nsqCfg := setting.Conf.NSQConfig
+		mq.InitNSQ(nsqCfg.Addr, dbClient, redisClient, mq.WorkerFlushOptions{
+			StatsInterval:   time.Duration(nsqCfg.StatsFlushSeconds) * time.Second,
+			StatsMaxKeys:    nsqCfg.StatsFlushMaxKeys,
+			CommentInterval: time.Duration(nsqCfg.CommentFlushSeconds) * time.Second,
+			CommentMaxKeys:  nsqCfg.CommentFlushMaxKeys,
+		})
 		zap.L().Info("NSQ enabled", zap.String("addr", setting.Conf.NSQConfig.Addr))
 	}
 

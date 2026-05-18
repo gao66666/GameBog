@@ -37,9 +37,15 @@ mq:
     brokers:
       - "127.0.0.1:9092"
     group_id: "goblog-workers"
+    # 积分入账 points.earn 单条消息最大尝试次数（仍失败则入 points.earn.dlq 并提交 offset）；重试间隔为指数退避
+    points_earn_max_retries: 3
   nsq:
     enabled: true
     addr: "127.0.0.1:4150"
+    stats_flush_seconds: 60
+    stats_flush_max_keys: 2000
+    comment_flush_seconds: 60
+    comment_flush_max_keys: 2000
 
 search:
   enabled: false

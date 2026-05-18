@@ -11,25 +11,14 @@ from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_core.messages import HumanMessage
 
-from config import load_config
+from config import get_prompts, load_config
 from mcp_public import PUBLIC_TOOLS
 from mcp_user import USER_TOOLS
 
 
 # ============================================================
-# MCP Server 摘要（路由阶段发给 LLM，不含工具细节）
+# MCP Server 摘要：见 prompts.yaml（热更新）
 # ============================================================
-
-SERVER_SUMMARIES = {
-    "public": {
-        "name": "blog-public（公开只读）",
-        "description": "浏览博客内容，无需登录。包含：搜索文章、文章详情/评论/排行榜/最新文章、话题浏览与讨论、游戏库与点评、用户公开资料。",
-    },
-    "user": {
-        "name": "blog-user（用户授权）",
-        "description": "个人中心操作，需要登录。包含：我的资料、我的文章列表、我的收藏、我关注的话题、我的游戏记录、我的积分余额。",
-    },
-}
 
 SERVER_TOOLS = {
     "public": PUBLIC_TOOLS,
@@ -37,21 +26,65 @@ SERVER_TOOLS = {
 }
 
 
+def build_tool_short_catalog(
+    servers: list[str],
+    *,
+    max_total_chars: int = 12000,
+) -> tuple[str, dict[str, str]]:
+    """按稳定顺序为已选组内工具生成「识别码 → 工具名 + 短说明」表。返回 (catalog 文本, 识别码→工具名)。"""
+    lines: list[str] = []
+    code_to_name: dict[str, str] = {}
+    n = 0
+    for group in servers:
+        tools = SERVER_TOOLS.get(group, [])
+        if not tools:
+            continue
+        lines.append(f"**组 `{group}`**")
+        for t in tools:
+            n += 1
+            code = f"T{n:02d}"
+            name = getattr(t, "name", None) or "unknown"
+            code_to_name[code] = name
+            desc = (getattr(t, "description", None) or "").strip().replace("\n", " ")
+            if len(desc) > 120:
+                desc = desc[:117] + "..."
+            lines.append(f"- **{code}** → 工具名 `{name}` — {desc}")
+        lines.append("")
+    text = "\n".join(lines).strip()
+    if len(text) > max_total_chars:
+        text = text[: max_total_chars - 40] + "\n…（工具表已截断，仍以识别码为准）"
+    return text or "（当前无可用工具）", code_to_name
+
+
+def format_tools_full_detail(
+    tool_names: list[str],
+    servers: list[str],
+    *,
+    max_chars: int = 28000,
+) -> str:
+    """按计划阶段给定工具名列表，拼接各工具的完整 description（供计划 LLM）。"""
+    by_name: dict[str, object] = {}
+    for group in servers:
+        for t in SERVER_TOOLS.get(group, []):
+            nm = getattr(t, "name", None)
+            if nm and nm not in by_name:
+                by_name[nm] = t
+    chunks: list[str] = []
+    for nm in tool_names:
+        t = by_name.get(nm)
+        if not t:
+            continue
+        desc = (getattr(t, "description", None) or "").strip()
+        chunks.append(f"### `{nm}`\n{desc}\n")
+    out = "\n".join(chunks).strip()
+    if len(out) > max_chars:
+        return out[: max_chars - 24] + "\n…（工具完整说明已截断）"
+    return out or "（无候选工具详情；请按第一轮分析在能力边界内做计划）"
+
+
 # ============================================================
 # 路由阶段 —— LLM 选出需要的 Server 组
 # ============================================================
-
-ROUTING_PROMPT = """有两个 MCP Server，判断用户问题需要哪个。
-
-public 能做什么：{public_desc}
-
-user 能做什么：{user_desc}
-
-只输出 JSON：
-{{"servers": ["public"]}}
-{{"servers": ["user"]}}
-{{"servers": ["public", "user"]}}
-{{"servers": []}}"""
 
 
 async def _route(user_message: str, has_token: bool) -> list[str]:
@@ -63,9 +96,11 @@ async def _route(user_message: str, has_token: bool) -> list[str]:
     if not available:
         return []
 
-    routing_msg = ROUTING_PROMPT.format(
-        public_desc=SERVER_SUMMARIES["public"]["description"],
-        user_desc=SERVER_SUMMARIES["user"]["description"] if has_token else "（未登录，不可用）",
+    prompts = get_prompts()
+    summaries = prompts["server_summaries"]
+    routing_msg = prompts["routing"].format(
+        public_desc=summaries["public"]["description"],
+        user_desc=summaries["user"]["description"] if has_token else "（未登录，不可用）",
     )
 
     cfg = load_config()
@@ -100,29 +135,7 @@ async def _route(user_message: str, has_token: bool) -> list[str]:
 
 
 # ============================================================
-# 执行阶段 —— 加载选中组的工具，流式执行
-# ============================================================
-
-SYSTEM_PROMPT = """你是 GoBlog 的智能助手「小博」，热情、简洁。
-
-规则：
-1. 始终用中文回复。
-2. 善用工具获取实时数据，不要编造。需要登录的操作系统已自动注入身份。调用工具时遵守各工具声明的参数名与类型（见工具 schema）。
-3. 无法处理的事诚实告知。
-4. 何时结束工具调用、给出**最终回复**：当**当前已取得的信息**已经足以完整、准确回答用户的问题，或**当前执行结果**已经满足用户需求时，即可不再调用工具，直接输出最终回复；不要为了「多调几次工具」而继续调用。
-5. 用户意图模糊、缺关键参数、或信息有歧义时，**追问澄清**，不要自行假设。
-   - 例如用户说"那个游戏"但你不知道是哪个 → 追问
-   - 例如用户说"看一下那篇文章"但没有给标题/ID → 追问
-6. 用户问题与工具能力无关时（如纯闲聊），友好回应即可。
-7. **长期记忆**：系统会把召回的长期记忆以 JSON 注入到上下文中供你参考；**没有**提供供你调用的「删除/编辑长期记忆」工具，这不是「没权限」，而是当前对话侧未实现该能力。长期记忆的合并、覆盖或删除由 `memory` 服务在**写入新记忆时**在后台自动决策。若用户要求删除自己的长期记忆，如实说明目前无法通过聊天直接删，可说明未来若上线记忆管理入口再处理。
-8. **复杂任务（多阶段、多依赖、或需多次检索/对比）**：
-   - 先在回复中**用简短编号列出步骤（计划）**，再按顺序执行，避免跳步或颠倒依赖。
-   - 执行中若某步受阻（工具报错、数据缺失、条件不足等），说明原因后**尝试对该问题进行解决或者尝试可行的替代方案，视该问题的解决方案实践难度来决定**；若多次(3次以上)尝试仍无法推进，应取消计划明确告知用户。不要强行编造。
-   - 若判定在当前信息与工具能力下**无法完成用户需求**，应**直接说明**原因、缺失条件或局限，并可提示用户如何补充信息（若适用）。"""
-
-
-# ============================================================
-# 执行阶段
+# 执行阶段 —— 加载选中组的工具，流式执行（system 提示见 prompts.yaml）
 # ============================================================
 
 
@@ -155,7 +168,7 @@ def build_agent(servers: list[str]):
     agent = create_agent(
         model=llm,
         tools=tools,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=get_prompts()["system"],
     )
 
     return agent

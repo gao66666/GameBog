@@ -164,6 +164,82 @@ func (r *ArticleRepository) BatchIncrementStats(viewDeltas map[uint64]int, likeD
 	})
 }
 
+// ArticleLikePair 文章点赞/取消点赞在消费端聚合用的一对 ID。
+type ArticleLikePair struct {
+	UserID    uint64
+	ArticleID uint64
+}
+
+// BatchFlushArticleActions 单事务：插入新点赞行（冲突忽略并计入 like_count）、删除取消点赞行、合并缓冲区中的阅读/点赞计数增量。
+func (r *ArticleRepository) BatchFlushArticleActions(
+	viewDeltas map[uint64]int,
+	likeBufferDeltas map[uint64]int,
+	newLikeRows []ArticleLikePair,
+	unlikeRows []ArticleLikePair,
+) error {
+	if len(viewDeltas) == 0 && len(likeBufferDeltas) == 0 && len(newLikeRows) == 0 && len(unlikeRows) == 0 {
+		return nil
+	}
+
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		mergedLike := make(map[uint64]int, len(likeBufferDeltas)+len(newLikeRows))
+		for id, c := range likeBufferDeltas {
+			mergedLike[id] += c
+		}
+
+		for _, p := range newLikeRows {
+			if p.UserID == 0 || p.ArticleID == 0 {
+				continue
+			}
+			row := &models.ArticleLike{
+				UserID:    p.UserID,
+				ArticleID: p.ArticleID,
+				CreatedAt: time.Now(),
+			}
+			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(row)
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected > 0 {
+				mergedLike[p.ArticleID]++
+			}
+		}
+
+		for _, p := range unlikeRows {
+			if p.UserID == 0 || p.ArticleID == 0 {
+				continue
+			}
+			if err := tx.Where("user_id = ? AND article_id = ?", p.UserID, p.ArticleID).Delete(&models.ArticleLike{}).Error; err != nil {
+				return err
+			}
+		}
+
+		for id, count := range viewDeltas {
+			if count == 0 {
+				continue
+			}
+			if err := tx.Model(&models.Article{}).
+				Where("id = ?", id).
+				UpdateColumn("view_count", gorm.Expr("view_count + ?", count)).Error; err != nil {
+				return err
+			}
+		}
+
+		for id, count := range mergedLike {
+			if count == 0 {
+				continue
+			}
+			if err := tx.Model(&models.Article{}).
+				Where("id = ?", id).
+				UpdateColumn("like_count", gorm.Expr("like_count + ?", count)).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
 func (r *ArticleRepository) GetArticleList(authorID uint64, page int, size int) ([]*models.Article, int64, error) {
 	var articles []*models.Article
 	var total int64

@@ -129,24 +129,3 @@ type PointsTransaction struct {
 	Description  string    `gorm:"column:description;size:255" json:"description"`
 	CreatedAt    time.Time `gorm:"column:created_at" json:"createdAt"`
 }
-
-// PointsOutbox 积分事件发件箱（Transactional Outbox）
-// 与业务操作在同一事务写入，保证业务成功则积分事件必达。
-type PointsOutbox struct {
-	ID          uint64    `gorm:"primaryKey;column:id" json:"id,string"`
-	UserID      uint64    `gorm:"column:user_id;not null;index" json:"userId,string"`
-	Amount      int64     `gorm:"column:amount;not null" json:"amount"`
-	RefType     string    `gorm:"column:ref_type;size:32;not null" json:"refType"`
-	RefID       uint64    `gorm:"column:ref_id" json:"refId,string"`
-	Description string    `gorm:"column:description;size:255" json:"description"`
-	Status      int       `gorm:"column:status;not null;default:0" json:"status"`          // 0=pending, 1=sent, 2=failed
-	RetryCount  int       `gorm:"column:retry_count;not null;default:0" json:"retryCount"` // 重试次数
-	CreatedAt   time.Time `gorm:"column:created_at" json:"createdAt"`
-	UpdatedAt   time.Time `gorm:"column:updated_at" json:"updatedAt"`
-}
-
-const (
-	PointsOutboxStatusPending = 0
-	PointsOutboxStatusSent    = 1
-	PointsOutboxStatusFailed  = 2
-)

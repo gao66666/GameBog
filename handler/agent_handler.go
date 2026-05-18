@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gao66666/GoBlog/database"
+	"github.com/gao66666/GoBlog/middleware"
 	"github.com/gao66666/GoBlog/tool"
 	"github.com/gin-gonic/gin"
 	"github.com/olahol/melody"
@@ -30,6 +31,7 @@ type AgentHandler struct {
 	httpClient *http.Client
 	sem        chan struct{} // 并发控制信号量
 	chatStore  *database.RedisAgentChatStore
+	wsIdle     *NotificationHandler // RouteAgentMessages 注入：服务端下行写 WS 后重置空闲计时
 }
 
 // NewAgentHandler 创建 AgentHandler。AGENT_URL 为空时仍返回非 nil，以便注册路由并返回明确错误。
@@ -68,6 +70,7 @@ type agentRequest struct {
 	UserID                uint64              `json:"user_id"`
 	Token                 string              `json:"token"`
 	ChatSessionID         string              `json:"chat_session_id"`
+	RequestID             string              `json:"request_id,omitempty"`
 	ConversationHistory   []map[string]string `json:"conversation_history,omitempty"`
 	HistoryOwnedByGateway bool                `json:"history_owned_by_gateway"`
 }
@@ -131,9 +134,10 @@ func (h *AgentHandler) streamChat(s *melody.Session, reqID string, userID uint64
 	defer cancel()
 
 	body, _ := json.Marshal(agentRequest{
-		Message: message,
-		UserID:  userID,
-		Token:   token,
+		Message:   message,
+		UserID:    userID,
+		Token:     token,
+		RequestID: reqID,
 	})
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", h.agentURL+"/chat", bytes.NewReader(body))
@@ -143,6 +147,7 @@ func (h *AgentHandler) streamChat(s *melody.Session, reqID string, userID uint64
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("X-Request-Id", reqID)
 
 	resp, err := h.httpClient.Do(httpReq)
 	if err != nil {
@@ -197,6 +202,9 @@ func (h *AgentHandler) streamChat(s *melody.Session, reqID string, userID uint64
 			cancel()
 			return
 		}
+		if h.wsIdle != nil {
+			h.wsIdle.touchWSIdleTimer(userID)
+		}
 		chunkCount++
 	}
 
@@ -229,6 +237,12 @@ func (h *AgentHandler) writeError(s *melody.Session, reqID, errMsg string) {
 	})
 	if err := s.Write(msg); err != nil {
 		zap.L().Warn("WS 错误消息写入失败", zap.Error(err))
+		return
+	}
+	if uid, ok := s.Get("userID"); ok {
+		if userID, ok := uid.(uint64); ok && h.wsIdle != nil {
+			h.wsIdle.touchWSIdleTimer(userID)
+		}
 	}
 }
 
@@ -256,6 +270,16 @@ func (h *AgentHandler) ChatProxy(c *gin.Context) {
 	if uid == 0 {
 		tool.ResponseError(c, ErrInvalidToken)
 		return
+	}
+
+	reqID := ""
+	if v, ok := c.Get(middleware.RequestIDKey); ok {
+		if s, ok2 := v.(string); ok2 {
+			reqID = s
+		}
+	}
+	if reqID == "" {
+		reqID = c.Writer.Header().Get("X-Request-Id")
 	}
 
 	var req chatProxyRequest
@@ -307,6 +331,7 @@ func (h *AgentHandler) ChatProxy(c *gin.Context) {
 
 	zap.L().Info("agent chat proxy start",
 		zap.Uint64("user_id", uid),
+		zap.String("request_id", reqID),
 		zap.Int("msg_len", len(req.Message)),
 		zap.String("chat_session_id", chatSessionID),
 	)
@@ -316,6 +341,7 @@ func (h *AgentHandler) ChatProxy(c *gin.Context) {
 		UserID:                uid,
 		Token:                 req.Token,
 		ChatSessionID:         chatSessionID,
+		RequestID:             reqID,
 		HistoryOwnedByGateway: h.chatStore != nil,
 	}
 	if h.chatStore != nil && chatSessionID != "" {
@@ -347,6 +373,9 @@ func (h *AgentHandler) ChatProxy(c *gin.Context) {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	if reqID != "" {
+		httpReq.Header.Set("X-Request-Id", reqID)
+	}
 
 	resp, err := h.httpClient.Do(httpReq)
 	if err != nil {
@@ -432,6 +461,7 @@ func (h *AgentHandler) ChatProxy(c *gin.Context) {
 
 	zap.L().Info("agent chat proxy done",
 		zap.Uint64("user_id", uid),
+		zap.String("request_id", reqID),
 		zap.Duration("latency", time.Since(start)),
 		zap.Int("chunks", chunkCount),
 		zap.Bool("persisted", !streamErr && h.chatStore != nil && strings.TrimSpace(tokenBuf.String()) != ""),

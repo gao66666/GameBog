@@ -16,23 +16,42 @@ import (
 // 全局生产者变量
 var producer *nsq.Producer
 
-func InitNSQ(addr string, db *gorm.DB, rdb *redis.Client) {
+// WorkerFlushOptions 统计类 NSQ 消费者的 flush：定时与定量 OR；MaxKeys<=0 时仅定时触发。
+type WorkerFlushOptions struct {
+	StatsInterval   time.Duration
+	StatsMaxKeys    int
+	CommentInterval time.Duration
+	CommentMaxKeys  int
+}
+
+func InitNSQ(addr string, db *gorm.DB, rdb *redis.Client, flush WorkerFlushOptions) {
+	if flush.StatsInterval <= 0 {
+		flush.StatsInterval = time.Minute
+	}
+	if flush.CommentInterval <= 0 {
+		flush.CommentInterval = flush.StatsInterval
+	}
+
 	// 1. 初始化生产者
 	initProducer(addr)
 
 	// 2. 注册：文章统计消费者 (处理点赞、阅读量)
 	articleRepo := database.NewArticleRepository(db)
-	worker := NewStatsWorker(articleRepo)
+	worker := NewStatsWorker(articleRepo, flush.StatsInterval, flush.StatsMaxKeys)
 	worker.StartFlushTicks()
 	registerConsumer(addr, "article_stats", "stats_sync_group", worker)
 
 	// 3. 注册：评论点赞消费者
 	commentRepo := database.NewCommentRepository(db)
-	commentWorker := NewCommentStatsWorker(commentRepo)
+	commentWorker := NewCommentStatsWorker(commentRepo, flush.CommentInterval, flush.CommentMaxKeys)
 	commentWorker.StartFlushTicks()
 	registerConsumer(addr, "comment_stats", "comment_stats_group", commentWorker)
 
-	zap.L().Info("所有 NSQ 服务初始化完成")
+	zap.L().Info("所有 NSQ 服务初始化完成",
+		zap.Duration("stats_flush_interval", flush.StatsInterval),
+		zap.Int("stats_flush_max_keys", flush.StatsMaxKeys),
+		zap.Duration("comment_flush_interval", flush.CommentInterval),
+		zap.Int("comment_flush_max_keys", flush.CommentMaxKeys))
 }
 
 // initProducer 封装生产者的初始化逻辑

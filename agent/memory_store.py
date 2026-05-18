@@ -27,6 +27,16 @@ def _r():
     return _redis
 
 
+async def redis_ping() -> bool:
+    """供 /readyz：Redis 不可用则拒绝就绪。"""
+    if _redis is None:
+        return False
+    try:
+        return bool(await _r().ping())
+    except Exception:
+        return False
+
+
 def _norm_chat_session_id(session_id: str | None) -> str:
     s = (session_id or "").strip()
     return s if s else "default"

@@ -110,9 +110,9 @@ func (s *ArticleService) CollectArticle(userID, articleID uint64) error {
 	if s.redisRepo != nil {
 		_ = s.redisRepo.DeleteUserCollectionList(userID)
 	}
-	// 收藏积分
+	// 收藏积分（无规则类型 collect 时 EnqueueEarn 直接忽略）
 	if s.pointsSvc != nil {
-		_ = s.pointsSvc.EarnPoints(userID, "collect", articleID)
+		_ = s.pointsSvc.EnqueueEarn(userID, "collect", articleID, 0)
 	}
 	return nil
 }
@@ -270,9 +270,9 @@ func (s *ArticleService) CreateArticle(article *models.Article) error {
 	_ = s.redisRepo.AddLatestArticle(article.ID, article.CreatedAt)
 	s.syncArticleToSearch(article)
 
-	// 发文积分奖励（异步发放，不影响主流程）
+	// 发文积分奖励（经统一入账入口，Kafka 开启时异步入账）
 	if s.pointsSvc != nil {
-		if err := s.pointsSvc.EarnPoints(article.AuthorID, "article", article.ID); err != nil {
+		if err := s.pointsSvc.EnqueueEarn(article.AuthorID, "article", article.ID, 0); err != nil {
 			zap.L().Warn("发文积分发放失败", zap.Uint64("article_id", article.ID), zap.Error(err))
 		}
 	}
@@ -460,70 +460,91 @@ func (s *ArticleService) ReadArticle(id uint64, actorKey string) (*models.Articl
 	return article, nil
 }
 
+// articleUnlike 取消点赞：Redis 立即生效（无条件删用户标记 + 有下界的计数减），MySQL 关系行由 MQ 消费者异步删除。
+func (s *ArticleService) articleUnlike(id, userID uint64) error {
+	decr, err := s.redisRepo.ApplyArticleUnlikeImmediate(userID, id)
+	if err != nil {
+		return err
+	}
+
+	if decr {
+		if err := s.redisRepo.UpdateLeaderboardDecr(id, "like"); err != nil {
+			_ = s.redisRepo.IncrStats(id, "like")
+			_ = s.redisRepo.SetUserArticleLikedMark(userID, id)
+			return err
+		}
+	}
+
+	likeDelta := 0
+	if decr {
+		likeDelta = -1
+	}
+	ld := likeDelta
+	msg := mq.ArticleActionMsg{
+		Type:      "unlike",
+		ArticleID: id,
+		UserID:    userID,
+		Timestamp: time.Now().Unix(),
+		LikeDelta: &ld,
+	}
+	if err := mq.PublishAction(msg); err != nil {
+		zap.L().Error("发送取消点赞消息到NSQ失败", zap.Uint64("aid", id), zap.Error(err))
+		if decr {
+			_ = s.redisRepo.IncrStats(id, "like")
+			_ = s.redisRepo.UpdateLeaderboard(id, "like")
+		}
+		_ = s.redisRepo.SetUserArticleLikedMark(userID, id)
+		return err
+	}
+	return nil
+}
+
 func (s *ArticleService) LikeArticle(id uint64, userID uint64, isCancel bool) error {
 	if userID == 0 || id == 0 {
 		return fmt.Errorf("invalid user_id/article_id")
 	}
 
-	actionType := "like"
 	if isCancel {
-		actionType = "unlike"
+		return s.articleUnlike(id, userID)
 	}
 
-	// 1) 先落“唯一行为记录”，只在状态真正变化时才继续更新计数与投递 MQ。
-	changed, err := s.articleDB.EnsureLikeState(userID, id, isCancel)
+	acquired, err := s.redisRepo.TryAcquireArticleLikeMark(userID, id)
 	if err != nil {
-		zap.L().Warn("更新点赞状态失败", zap.Uint64("article_id", id), zap.Uint64("user_id", userID), zap.Error(err))
+		zap.L().Warn("Redis 点赞占位失败", zap.Uint64("article_id", id), zap.Uint64("user_id", userID), zap.Error(err))
 		return err
 	}
-	if !changed {
+	if !acquired {
 		return nil
 	}
 
-	// 2) 状态变更后，再更新 Redis 实时计数与榜单（性能优先，可容忍短暂不一致）。
-	if actionType == "like" {
-		if err := s.redisRepo.IncrStats(id, "like"); err != nil {
-			return err
-		}
-		if err := s.redisRepo.UpdateLeaderboard(id, "like"); err != nil {
-			_ = s.redisRepo.DecrStats(id, "like")
-			return err
-		}
-	} else {
-		if err := s.redisRepo.DecrStats(id, "like"); err != nil {
-			return err
-		}
-		if err := s.redisRepo.UpdateLeaderboardDecr(id, "like"); err != nil {
-			_ = s.redisRepo.IncrStats(id, "like")
-			return err
-		}
+	if err := s.redisRepo.IncrStats(id, "like"); err != nil {
+		_ = s.redisRepo.DeleteKey(database.ArticleUserLikedRedisKey(userID, id))
+		return err
+	}
+	if err := s.redisRepo.UpdateLeaderboard(id, "like"); err != nil {
+		_ = s.redisRepo.DecrStats(id, "like")
+		_ = s.redisRepo.DeleteKey(database.ArticleUserLikedRedisKey(userID, id))
+		return err
 	}
 
-	// 3) 投递 NSQ 增量消息（用于 MySQL 批量落库）。
 	msg := mq.ArticleActionMsg{
-		Type:      actionType,
+		Type:      "like",
 		ArticleID: id,
 		UserID:    userID,
 		Timestamp: time.Now().Unix(),
 	}
 	if err := mq.PublishAction(msg); err != nil {
 		zap.L().Error("发送点赞消息到NSQ失败", zap.Uint64("aid", id), zap.Error(err))
-		// MQ 发送失败：回滚 Redis 侧增量（DB 状态已变更，MySQL 计数后续可通过修正任务对齐）
-		if actionType == "like" {
-			_ = s.redisRepo.DecrStats(id, "like")
-			_ = s.redisRepo.UpdateLeaderboardDecr(id, "like")
-		} else {
-			_ = s.redisRepo.IncrStats(id, "like")
-			_ = s.redisRepo.UpdateLeaderboard(id, "like")
-		}
+		_ = s.redisRepo.DecrStats(id, "like")
+		_ = s.redisRepo.UpdateLeaderboardDecr(id, "like")
+		_ = s.redisRepo.DeleteKey(database.ArticleUserLikedRedisKey(userID, id))
 		return err
 	}
 
-	// 4) 被点赞 → 给文章作者加积分（仅在点赞时，取消点赞不扣分）
-	if actionType == "like" && s.pointsSvc != nil {
+	if s.pointsSvc != nil {
 		article, err := s.articleDB.GetArticleByID(id)
 		if err == nil && article != nil && article.AuthorID != userID {
-			if err := s.pointsSvc.EarnPoints(article.AuthorID, "article_liked", id); err != nil {
+			if err := s.pointsSvc.EnqueueEarn(article.AuthorID, "article_liked", id, userID); err != nil {
 				zap.L().Warn("文章被点赞积分发放失败",
 					zap.Uint64("article_id", id),
 					zap.Uint64("author_id", article.AuthorID),

@@ -1,19 +1,16 @@
 # GoBlog Agent
 
-GoBlog 的智能对话 Agent 服务：大语言模型 + **路由选工具** + **LangChain 工具循环（ReAct 风格）** + **短/中/长期记忆** + **MCP 语义工具集**，通过 SSE 向博客前端或网关提供流式回复。
+GoBlog 项目的智能对话 Agent，基于大语言模型 + 三层记忆系统 + MCP 工具集，为博客用户提供自然语言交互助手服务。
 
-> 角色名：**小博** — 热情、简洁的博客助手。
+> Agent 角色名：**小博** — 热情、简洁的博客智能助手。
 
 ---
 
 ## 目录
 
-- [架构总览](#架构总览)
-- [三阶段请求流水线](#三阶段请求流水线)
-- [执行阶段：上下文如何拼接](#执行阶段上下文如何拼接)
+- [核心架构](#核心架构)
+- [三阶段处理流程](#三阶段处理流程)
 - [记忆系统](#记忆系统)
-- [Qdrant 混合检索（长期向量）](#qdrant-混合检索长期向量)
-- [文档入库（Wiki / 百科块）](#文档入库wiki--百科块)
 - [MCP 工具集](#mcp-工具集)
 - [目录结构](#目录结构)
 - [环境依赖](#环境依赖)
@@ -22,143 +19,188 @@ GoBlog 的智能对话 Agent 服务：大语言模型 + **路由选工具** + **
 - [配置说明](#配置说明)
 - [日志](#日志)
 - [Demo](#demo)
-- [设计定位与理性评价](#设计定位与理性评价)
 
 ---
 
-## 架构总览
+## 核心架构
 
 ```
-用户 POST /chat
-    │
-    ▼
-┌─────────────────────────────────────┐
-│ 阶段 0  Query 改写 (rag.rewrite_query)   │  ← 仅用于长期记忆检索查询；用户原文仍进 Agent
-└─────────────────┬───────────────────┘
-                  ▼
-┌─────────────────────────────────────┐
-│ 阶段 1  路由选组 (agent_core._route)     │  ← 选 public / user / 组合 / 空（闲聊）
-└─────────────────┬───────────────────┘
-                  ▼
-┌─────────────────────────────────────┐
-│ 阶段 2  build_agent + astream_events    │  ← 工具 + 上下文，SSE 输出
-└─────────────────┬───────────────────┘
-                  ▼
-        短期 / 中期滚动、长期记忆按需提交
+┌─────────────────────────────────────────────────────────────────────┐
+│                        用户请求 (POST /chat)                        │
+└──────────────────────────┬──────────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  阶段 0: Query 改写 (rag.rewrite_query)                              │
+│  用 LLM 补全省略/指代/拆分复合问题，提升检索质量                      │
+└──────────────────────────┬───────────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  阶段 1: 路由选组 (agent_core._route)                                │
+│  用 LLM 判断需要哪个 MCP Server 组: [public] / [user] / [public,user]│
+└──────────────────────────┬───────────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  阶段 2: Agent 执行 (agent_core.build_agent + agent.astream_events)  │
+│  加载选中组的 MCP 工具 + 上下文(短/中/长期记忆) → SSE 流式输出       │
+└──────────────────────────┬───────────────────────────────────────────┘
+                           │
+                           ▼
+               ┌───────────────────────┐
+               │  三层记忆自动落盘      │
+               │  短期→中期→长期 渐进归档 │
+               └───────────────────────┘
 ```
 
----
+## 三阶段处理流程
 
-## 三阶段请求流水线
+### 阶段 0 — Query 改写 (`rag.py`)
 
-### 阶段 0 — Query 改写（`rag.py`）
+将用户原始问题用 LLM 改写为更适合检索的表述：
+- 补全省略和指代（如"那个游戏" → 具体名称）
+- 使用标准术语
+- 拆分复合问题为多个检索要点
 
-用 LLM 将用户问题改写成更适合 **长期记忆向量检索** 的表述（补全省略、标准化术语等）。
+### 阶段 1 — 路由选组 (`agent_core.py`)
 
-- **注意**：改写结果用于 `get_long_term_context(..., query=rewritten)`；**当前轮发给 Agent 的用户消息仍是原始 `message`**，不是改写句。
+两阶段 Agent 设计的关键：路由阶段**不加载全部工具**，只给 LLM 两组 Server 的摘要描述，LLM 决策成本低，返回需要哪几组：
 
-### 阶段 1 — 路由选组（`agent_core.py`）
+| Server 组 | 摘要说明 |
+|-----------|---------|
+| `public` | 公开只读：搜索文章、文章详情/排行榜/评论、话题、游戏库、用户公开资料 |
+| `user` | 用户授权（需 token）：我的资料、我的文章、收藏、关注话题、游戏记录、积分 |
 
-两阶段设计：**路由阶段不加载全部工具**，只给两组 MCP（`public` / `user`）的摘要，由 LLM 输出 JSON 选择需要的组。
+路由时的额外处理：
+- 若未传入 `token`，`user` 组不可用
+- 路由结果为空则 Agent 退化为纯闲聊模式
 
-| 组 | 说明 |
-| --- | --- |
-| `public` | 公开只读：文章、话题、游戏库、用户公开资料等 |
-| `user` | 需 JWT：我的资料、文章、收藏、关注、游戏记录、积分等 |
+### 阶段 2 — Agent 执行 (`agent_core.py`)
 
-- 未传 `token` 时不能使用 `user`。
-- 路由结果为空时，工具较少，偏闲聊。
+根据路由结果加载对应的 MCP 工具 + `get_current_time` 内置工具，构建 Agent，注入上下文后流式执行。
 
-### 阶段 2 — Agent 执行（`agent_core.py` + `main.py`）
+**上下文组装**（按优先级）：
+1. **长期记忆** — 来自 MongoDB（结构化事实）+ Qdrant（向量经验），按相关度排序
+2. **中期摘要** — 来自 Redis，之前轮次的 LLM 摘要
+3. **短期对话** — 最近几轮用户/助手原文
+4. **当前问题** — 改写后的 query
 
-`create_agent` 注入 **系统提示**（角色与行为规则，含复杂任务分步、何时结束工具调用等），加载选中工具与 `get_current_time`，对组装好的 `messages` 做 **流式事件**（`on_chat_model_stream` / `on_tool_*`）。
+**流式事件**（SSE `data:` 格式）：
 
-**SSE 事件类型**（节选）：
-
-| 类型 | 含义 |
-| --- | --- |
-| `session` | Session 信息 |
-| `rewrite` | 改写结果与耗时 |
-| `route` | 路由结果与耗时 |
-| `token` | 模型输出片段 |
-| `tool_start` / `tool_end` | 工具调用 |
-| `done` / `error` | 结束或错误 |
-
----
-
-## 执行阶段：上下文如何拼接
-
-`main.py` 中传入模型的 `messages` **顺序**为：
-
-1. （可选）**中期记忆**：`system`，内容为 `中期记忆(JSON 列表):` + Redis 中期摘要 JSON  
-2. （可选）**长期记忆**：`system`，内容为 `长期记忆(JSON 列表):` + Mongo + Qdrant 合并后的召回 JSON  
-3. **短期对话**：最近若干轮 `user`/`assistant`（Redis 或网关注入的 `conversation_history`）  
-4. **当前用户输入**：`{"role":"user","content": message}`  
-
-此外，**框架层**另有一条 **Agent 系统提示**（`SYSTEM_PROMPT`），与上述列表共同构成完整指令上下文。顺序微调可能对侧重点有轻微影响；**当前用户句宜保持在末尾**。
+| 事件类型 | 说明 |
+|---------|------|
+| `session` | Session ID |
+| `rewrite` | 改写结果 + 耗时 |
+| `route` | 路由结果 + 耗时 |
+| `token` | LLM 输出 token 流 |
+| `tool_start` | 工具调用开始 |
+| `tool_end` | 工具调用结束（结果预览） |
+| `done` | 完成 |
+| `error` | 异常（含 traceback） |
 
 ---
 
 ## 记忆系统
 
-三层渐进：**短期（Redis List）→ 中期（Redis 摘要）→ 长期（Mongo + Qdrant）**。短期超窗时由摘要模型压缩并滚动到中期。
+三层渐进式记忆架构，从短期（Session）到长期（持久化）自动流转。
+
+### 短期记忆 — Redis List
+
+| 属性 | 值 |
+|------|-----|
+| 存储 | Redis List（`agent:short:{user_id}:list`） |
+| TTL | 默认 60 分钟 |
+| 容量 | 最近 12 条对话（`short_window_messages`） |
+| 用途 | 当前会话上下文，原文保留 |
+
+超出容量时：**顶部 N 条被 LLM 压缩为中期摘要**，然后从短期中弹出。
+
+### 中期记忆 — Redis List
+
+| 属性 | 值 |
+|------|-----|
+| 存储 | Redis List（`agent:mid:{user_id}:summary:list`） |
+| TTL | 默认 7 天 |
+| 容量 | 最多 20 条摘要 |
+| 格式 | `{topic, stage, pending, subtask, facts}` |
+| 用途 | 跨短期会话的上下文摘要 |
+
+`stage` 取值：`提问 / 信息收集中 / 执行中 / 答疑中 / 已完结`
 
 ### 长期记忆 — MongoDB + Qdrant
 
-| 存储 | 内容侧重 |
-| --- | --- |
-| MongoDB | 结构化事实：`profile` / `rule` / `preference` 等 |
-| Qdrant | 向量 + payload：对话抽取的经验句段、以及下文所述 **文档块** |
+| 属性 | MongoDB | Qdrant |
+|------|---------|--------|
+| 存储内容 | 结构化事实（规则/身份/偏好/状态） | 经验/案例/背景（向量） |
+| 字段 | `kind`(profile/rule/preference)、`content`、`importance`、`confidence` | 文本向量 + payload |
+| 用途 | 精确事实查询 | 相似度语义检索 |
 
-**写入路径**
+**触发判定**（`should_trigger_long_term_by_prompt`）：LLM 判断对话是否有长期保留价值。
 
-1. **对话抽取**：触发判定 → `_extract_memory_items` → `decision_llm` 决策 → 写入。Qdrant 侧点带 `memory_scope=dialogue`（及个人 `user_id`）。
-2. **文档入库**：HTTP `POST /memory/ingest-document`，写入全局知识：`user_id=0`、`memory_scope=document`，带 `article_id`、`chunk_index`、`content_revision`、`source`、`ingest_kind` 等 payload。
+**提取写入**（`_extract_memory_items` → `_store_memory_items`）：
+1. LLM 从对话中提取原子记忆条目（最多 5 条），标记去向（mongo/qdrant）
+2. **决策引擎**（`decision_llm`）对比已有记忆，决定每条的操作：
+   - Mongo：`add` / `overwrite` / `delete` / `ignore`
+   - Qdrant：`add` / `lower_confidence` / `ignore`
 
-**召回（`get_long_term_context`）**
+**召回**（`get_long_term_context`）：Mongo 精确查询 + Qdrant 向量检索 → 合并去重 → 按 `score` 排序。
 
-- `user_id > 0`：**Mongo 本人事实** + **Qdrant（本人 dialogue ∪ 全局 document）**。  
-- `user_id ≤ 0`：仅 **Qdrant 全局文档库**（供未登录时也能检索百科类片段）。
+**触发时机**：
+- `auto` — 每轮对话完成后自动评估
+- `session_end` — 会话结束时显式触发（`POST /memory/session-end`）
+- `timeout` — Session 超时
+- `explicit_remember` — 用户明确说"记住"
 
-Mongo 侧当前实现为按用户拉取活跃事实批次；与 Qdrant 结果按 **`score` 合并排序**后截断。
+### Session 管理
 
----
-
-## Qdrant 混合检索（长期向量）
-
-默认 **`memory.hybrid_search: true`**（可在 `config.yaml` 关闭退回纯向量）。
-
-1. **向量路**：对用户查询（改写句用于召回）做 embedding，在 scope 过滤下 `search` 一批候选。  
-2. **可选字面路**（`hybrid_keyword_recall`）：对 `payload.content` 使用 **`MatchTextAny`** + `scroll`，多捞字面命中的块（单次有 `limit`，非全表拉回 Python）。  
-3. 两路 **点 ID 去并**（有上限），`retrieve` 后计算 **dense（余弦）** 与 **keyword（原句拆 token 重合）**，归一化后加权融合，再乘 confidence 与时间衰减得到最终 `score`。
-
-权重与候选规模见配置项：`hybrid_dense_weight`、`hybrid_keyword_weight`、`hybrid_prefetch_limit`、`hybrid_max_union_points`。
-
----
-
-## 文档入库（Wiki / 百科块）
-
-`POST /memory/ingest-document`：将单块正文写入 Qdrant 全局文档库；同一 `article_id + chunk_index + content_revision` **upsert 覆盖**。
-
-若配置了 **`document_ingest_secret`**（或环境变量 `DOCUMENT_INGEST_SECRET`），请求需带 **`X-Ingest-Key`**。
-
-请求体字段参见下文 [API 参考](#api-参考)。
+| 功能 | 说明 |
+|------|------|
+| 创建 | `create_session()` — 首次请求时自动创建 |
+| 续期 | `refresh_session()` — 每次请求续期 TTL |
+| 结束 | `clear_session()` — 配合长期记忆 commit |
+| 空闲超时 | 默认 30 分钟（`session_idle_timeout_minutes`） |
 
 ---
 
 ## MCP 工具集
 
-### Public（`mcp_public.py`）
+### Public — 公开只读（`mcp_public.py`）
 
-搜索文章、文章详情/排行榜/评论、话题与讨论、游戏库与点评、用户公开资料等（只读）。
+无需鉴权，覆盖浏览场景：
 
-### User（`mcp_user.py`）
+| 工具 | 说明 |
+|------|------|
+| `search_articles` | 全文搜索文章 |
+| `get_article_detail` | 文章详情（正文截断 2000 字） |
+| `list_latest_articles` | 最新文章列表 |
+| `get_article_leaderboard` | 排行榜（view/like） |
+| `get_article_comments` | 文章评论 |
+| `list_all_topics` | 话题列表 |
+| `get_topic_detail` | 话题详情 |
+| `get_topic_articles` | 话题下的文章 |
+| `get_topic_discussions` | 话题下的讨论 |
+| `list_all_games` | 游戏库列表 |
+| `get_game_detail` | 游戏详情 |
+| `get_game_reviews` | 游戏玩家点评 |
+| `get_user_public_profile` | 用户公开资料（不含手机/邮箱） |
 
-需 JWT；个人资料、我的文章、收藏、关注话题、游戏记录、积分等。Token 通过 `RunnableConfig` 注入，不暴露给模型提示词。
+### User — 用户授权（`mcp_user.py`）
 
-### Stdio（`mcp_server.py`）
+需要 JWT token，通过 `RunnableConfig` 注入（LLM 不可见，安全隔离）：
 
-独立 MCP 服务进程，工具能力与 LangChain 侧对齐，便于外部客户端接入。
+| 工具 | 说明 |
+|------|------|
+| `me_get_profile` | 我的个人资料 |
+| `me_get_articles` | 我的文章列表 |
+| `me_get_collections` | 我的收藏 |
+| `me_get_followed_topics` | 我关注的话题 |
+| `me_get_game_plays` | 我的游戏记录 |
+| `me_get_wallet` | 我的积分余额 |
+
+### MCP Stdio Server（`mcp_server.py`）
+
+独立的 MCP 协议实现，可通过 `mcp` CLI 或 `langchain_mcp_adapters` 连接，提供与 LangChain Agent 相同的工具集。
 
 ---
 
@@ -166,49 +208,103 @@ Mongo 侧当前实现为按用户拉取活跃事实批次；与 Qdrant 结果按
 
 ```
 agent/
-├── main.py              # FastAPI：/chat、/memory/session-end、/memory/ingest-document、/health
-├── config.py / config.yaml
-├── agent_core.py        # 路由、SYSTEM_PROMPT、build_agent
-├── rag.py               # Query 改写
-├── blog_client.py       # 调用 Go 博客 API
-├── memory_manager.py    # 长期记忆、Qdrant 混合检索、文档入库
-├── memory_store.py      # 短期/中期、Session
-├── mcp_public.py / mcp_user.py / mcp_server.py
-├── agent_log.py
-├── test_agent.py、agent_demo*.py
-├── requirements.txt
-└── README.md
+├── main.py                    # FastAPI 入口 (POST /chat, POST /memory/session-end)
+├── config.py                  # 配置加载 (config.yaml → dict)
+├── config.yaml                # LLM/Redis/Mongo/Qdrant 等配置
+│
+├── agent_core.py              # 路由选组 + Agent 构建 + 执行
+├── rag.py                     # Query 改写
+├── blog_client.py             # Go 后端 HTTP 客户端（urllib）
+│
+├── memory_manager.py          # 长期记忆：MongoDB + Qdrant + 决策引擎
+├── memory_store.py            # 短期/中期记忆 (Redis) + Session 管理
+│
+├── mcp_public.py              # 公开 MCP 工具集
+├── mcp_user.py                # 用户 MCP 工具集
+├── mcp_server.py              # 独立 MCP Stdio Server
+│
+├── agent_log.py               # 日志模块（按天切割，保留 7 天）
+│
+├── agent_demo.py              # LangChain Agent 交互式 Demo
+├── agent_demo_simple.py       # 最简版 Agent Demo（单次调用）
+├── test_agent.py              # CLI 测试脚本
+│
+├── requirements.txt           # Python 依赖
+└── README.md                  # 本文件
 ```
 
 ---
 
 ## 环境依赖
 
-| 服务 | 用途 |
-| --- | --- |
-| Redis | 短期/中期、Session |
-| MongoDB | 长期结构化事实 |
-| Qdrant | 长期向量 + 文档块 |
-| GoBlog API | 工具调博客业务 |
-| 智谱等 OpenAI 兼容 API | LLM、Embedding |
+| 服务 | 用途 | 必需 |
+|------|------|------|
+| Redis | 短期/中期记忆、Session 存储 | ✅ |
+| MongoDB | 长期记忆（结构化事实） | ✅ |
+| Qdrant | 长期记忆（向量检索） | ✅ |
+| GoBlog 后端 | 博客业务 API | ✅ |
+| 智谱 API / OpenAI | LLM 推理、Embedding | ✅ |
 
 ---
 
 ## 快速启动
 
+### 1. 启动依赖服务
+
 ```bash
-# 依赖（示例）
+# 使用项目根目录的 docker-compose
 cd ..
 docker compose up -d redis mongodb qdrant
 
-cd agent
-python -m venv .venv
-.venv\Scripts\activate   # Windows
-pip install -r requirements.txt
-python main.py           # 默认 0.0.0.0:9091
+# 启动 Go 后端
+go run main.go
 ```
 
-配置好 `config.yaml` 中的 `llm` / `embedding` / 数据服务地址后再启动。
+### 2. 配置 LLM
+
+编辑 `agent/config.yaml`，设置 `llm.api_key` 等参数。默认使用智谱 GLM 系列模型。
+
+### 3. 启动 Agent
+
+```bash
+cd agent
+
+# 创建虚拟环境（推荐）
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+# source .venv/bin/activate  # Linux/Mac
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 启动
+python main.py
+# → http://0.0.0.0:9091
+```
+
+### 4. 试用
+
+```bash
+# CLI 测试（只读，不带用户 token）
+python test_agent.py "有什么好玩的游戏"
+
+# CLI 测试（完整功能，带用户 token）
+python test_agent.py "我的积分有多少" --token=xxx
+
+# 直接调 HTTP
+curl -N -X POST http://127.0.0.1:9091/chat ^
+  -H "Content-Type: application/json" ^
+  -d "{\"message\":\"推荐几个游戏\",\"user_id\":1,\"token\":\"\"}"
+```
+
+### 5. 验证记忆系统
+
+```bash
+# 第一轮：记住用户信息
+python test_agent.py "我叫张三，喜欢RPG游戏" --token=xxx
+# 第二轮：从长期记忆召回
+python test_agent.py "我上次说自己喜欢什么类型的游戏" --token=xxx
+```
 
 ---
 
@@ -216,97 +312,146 @@ python main.py           # 默认 0.0.0.0:9091
 
 ### `POST /chat`
 
+请求体：
+
 ```json
 {
   "message": "用户问题",
   "user_id": 1,
-  "token": "可选 JWT",
-  "conversation_history": null,
-  "history_owned_by_gateway": false
+  "token": "JWT token（可选，不传则无 user 工具）"
 }
 ```
 
-- `conversation_history`：可选；由网关注入博客 Redis 中的短期消息列表时，设 `history_owned_by_gateway: true`，本服务不再读本地 Redis 短期列表。
-
-响应：**SSE**（`text/event-stream`）。
+响应：SSE 流式（`text/event-stream`），事件见[阶段 2 事件表](#阶段-2--agent-执行)。
 
 ### `POST /memory/session-end`
 
-结束会话时触发长期记忆收尾与 Session 清理。
-
-```json
-{ "user_id": 1, "reason": "session_end" }
-```
-
-### `POST /memory/ingest-document`
-
-写入全局文档向量块（需密钥时加头 `X-Ingest-Key`）。
+手动触发长期记忆写入 + 清理 Session：
 
 ```json
 {
-  "article_id": "词条或文章标识",
-  "chunk_index": 0,
-  "content": "块正文",
-  "content_revision": 1,
-  "source": "来源 URL 或稳定键",
-  "ingest_kind": "raw_chunk",
-  "game_name": null,
-  "section_path": ["章节", "可选"],
-  "preview": null
+  "user_id": 1,
+  "reason": "session_end"
 }
 ```
 
 ### `GET /health`
 
-`{"status":"ok"}`
+健康检查：`{"status": "ok"}`
 
 ---
 
 ## 配置说明
 
-主要键：`llm`、`summary_llm`、`memory_manager_llm`、`decision_llm`、`embedding`、`redis`、`mongo`、`qdrant`、`memory`、`blog_api_url`、`document_ingest_secret`。
+完整配置见 `config.yaml`，通过 `config.py` 的 `load_config()` 加载。
 
-### Memory（节选）
+### LLM 配置段
 
-| 参数 | 说明 |
-| --- | --- |
-| `long_term_retrieval_limit` | 每次召回长期条数上限 |
-| `hybrid_search` | 是否启用 Qdrant 混合检索 |
-| `hybrid_prefetch_limit` | 向量/字面各路候选规模 |
-| `hybrid_max_union_points` | 融合前去并后的最大点数 |
-| `hybrid_dense_weight` / `hybrid_keyword_weight` | 融合权重（内部会归一化） |
-| `hybrid_keyword_recall` | 是否启用 MatchTextAny 扩展召回 |
+| 配置段 | 用途 | 默认模型 |
+|--------|------|---------|
+| `llm` | 主 Agent 推理 | `glm-5` |
+| `summary_llm` | 中期摘要生成 | `glm-4-air` |
+| `memory_manager_llm` | 长期记忆提取/判定 | `glm-4-air` |
+| `decision_llm` | 长期记忆决策（新增/覆盖/忽略） | `glm-4-air` |
+| `embedding` | Qdrant 向量化 | `text_embedding-v3` |
+
+各段均可独立配置 `base_url` / `api_key` / `model` / `temperature` / `thinking`。
+
+### Memory 参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `short_ttl_minutes` | 60 | 短期记忆过期时间 |
+| `mid_ttl_days` | 7 | 中期摘要过期时间 |
+| `mid_max_items` | 20 | 中期摘要最大条数 |
+| `short_window_messages` | 12 | 短期容量，超过后触发压缩 |
+| `long_term_retrieval_limit` | 6 | 每次召回长期记忆条数 |
+| `session_idle_timeout_minutes` | 30 | Session 空闲超时 |
+| `summary_enabled` | true | 是否启用中期摘要 |
+
+### 数据服务
+
+| 段 | 默认地址 |
+|----|---------|
+| `redis` | `localhost:6379` |
+| `mongo` | `mongodb://root:123456@localhost:27017` |
+| `qdrant` | `http://127.0.0.1:6333` |
 
 ---
 
 ## 日志
 
-`agent_log.py`：按天滚动，默认保留 7 天，路径参见运行目录下的 `logger/agent_log/`。
+使用 `agent_log.py` 模块，日志输出到 `logger/agent_log/` 目录：
+
+| 特性 | 说明 |
+|------|------|
+| 切割 | 按天自动切割（`TimedRotatingFileHandler`） |
+| 保留 | 保留 7 天 |
+| 格式 | `%(asctime)s [%(levelname)s] %(name)s: %(message)s` |
+| 输出 | 文件（DEBUG）+ 控制台（INFO） |
+| Logger | `main` — 业务日志 / `agent_error` — 异常日志 / `blog_client` — HTTP 客户端日志 |
 
 ---
 
 ## Demo
 
-- `agent_demo.py` / `agent_demo_simple.py`：本地体验 LangChain Agent（与生产记忆/路由解耦）。
+为方便快速体验，提供了两个独立 Demo（不依赖 Redis/Mongo/Qdrant）：
 
----
+### `agent_demo.py` — 交互式
 
-## 设计定位与理性评价
+```bash
+python agent_demo.py
+```
 
-**定位**：面向博客场景的 **单体 Agent 服务**——在「能做复杂产品」与「依赖少、可维护」之间取了折中：路由减工具面、记忆分层、Wiki 与对话记忆分 scope，适合中小流量与个人/小团队维护。
+多轮对话，带 ConversationBufferMemory，支持计算器/时间/单词长度三个工具。
 
-**优点（相对同类开源博客助手）**
+### `agent_demo_simple.py` — 最简版
 
-- 流水线清晰：**改写 → 路由 → 工具 Agent**，不是单轮 completion。  
-- **工具与权限分离**（public / user），token 不喂给提示词。  
-- **记忆模型完整**：短中长按窗口与触发策略演进；长期带 **决策 LLM** 缓解冲突；Qdrant 支持 **混合检索** 与 **独立文档入库**，便于接 Wiki。  
-- **可观测**：SSE 事件拆分改写、路由、工具阶段。
+```bash
+python agent_demo_simple.py
+```
 
-**局限与风险（诚实描述）**
+单次调用，演示 `create_agent()` + `astream_events` 基本用法。
+|--------|------|
+| `llm` | 主对话模型 (默认 `glm-5`) |
+| `summary_llm` | 中期摘要模型 (默认 `glm-4-air`) |
+| `memory_manager_llm` | 记忆提取/触发判定模型 |
+| `decision_llm` | 长期记忆决策模型 (新增/覆盖/删除/忽略判定) |
+| `embedding` | 文本向量化模型 (默认 `text_embedding-v3`) |
+| `mongo` | 长期记忆结构化存储 |
+| `qdrant` | 长期记忆向量存储 |
+| `redis` | 短期/中期记忆 + Session |
+| `memory` | 记忆窗口大小、TTL、超时等策略 |
+| `decision_llm` | 记忆决策专用小模型 |
 
-- **规划**：复杂任务主要靠 **系统提示** 约束「先计划再执行」，没有独立的结构化 Plan-and-Execute 图或评测集。  
-- **质量上界**：路由、记忆提取、决策均依赖 LLM，错误会级联；生产上宜加日志抽检与关键路径监控。  
-- **Mongo 长期召回**当前偏「按用户拉一批事实」，与 query 的语义对齐不如向量侧精确（若需可后续升级为检索或摘要筛选）。  
-- **混合检索**是 dense + 字面启发式 +（可选）MatchTextAny，**不是** Qdrant 文档里那种 **dense+sparse 双向量 RRF**；数据量大时建议给 `content` 建 payload 全文索引以减轻服务端压力。
+## 记忆系统
 
-**总评**：作为博客内置助手，架构 **完整、边界清楚**，在单体项目里属于 **扎实可用的一档**；若对标商业「Agent 平台」或强合规场景，还需补充 **评测、追踪、与人审知识库闭环** 等工程化能力。是否「够用」取决于你的产品预期与流量规模，而非缺一两项时髦名词。
+| 层级 | 存储 | TTL | 内容 |
+|------|------|-----|------|
+| **短期** | Redis List | 60min | 原始对话消息，12 条窗口，满后前 6 条压缩到中期 |
+| **中期** | Redis List | 7d | LLM 压缩的结构化摘要 JSON |
+| **长期** | MongoDB + Qdrant | 永久 | 结构化事实 (Mongo) + 经验向量 (Qdrant) |
+
+**长期记忆决策流程：**
+
+```
+触发判定 → 提取条目 → 全量读取已有记忆 → 决策 LLM 判定
+                                           ├─ add（新增）
+                                           ├─ overwrite（覆盖）
+                                           ├─ delete（软删除）
+                                           └─ ignore（忽略）
+```
+
+MongoDB 条目分三类：`profile`（身份）/ `rule`（规范）/ `preference`（偏好）。
+
+## 日志
+
+输出到 `logger/agent_log/YYYYMMDD.log`，按天切割保留 7 天。所有 HTTP 错误、LLM 异常、Mongo/Qdrant 操作失败均有记录。
+
+## API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/chat` | POST | 主对话接口 (SSE 流式) |
+| `/health` | GET | 存活检查 |
+| `/memory/session-end` | POST | 会话结束时触发长期记忆收尾 |

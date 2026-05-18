@@ -1,13 +1,17 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 
 	"github.com/gao66666/GoBlog/database"
+	"github.com/gao66666/GoBlog/mq"
 	"github.com/gao66666/GoBlog/service"
 	"github.com/gao66666/GoBlog/tool"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 type PointsHandler struct {
@@ -16,6 +20,23 @@ type PointsHandler struct {
 
 func NewPointsHandler(se *service.PointsService) *PointsHandler {
 	return &PointsHandler{se: se}
+}
+
+// ProcessPointsEarnMessage 实现 mq.PointsEarnProcessor：Kafka 消费入账（幂等键在消息体内）。
+func (h *PointsHandler) ProcessPointsEarnMessage(ctx context.Context, payload []byte) error {
+	_ = ctx
+	if h == nil || h.se == nil {
+		return nil
+	}
+	var p mq.PointsEarnPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		zap.L().Error("积分入账消息解析失败", zap.Error(err))
+		return nil
+	}
+	if p.UserID == 0 || p.RefType == "" || p.TxnID == 0 {
+		return nil
+	}
+	return h.se.EarnPointsWithTxnID(p.UserID, p.RefType, p.RefID, p.TxnID)
 }
 
 // GetMyWallet 获取自己的积分账户

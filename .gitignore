@@ -1,0 +1,39 @@
+# --- 编译产物 ---
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# --- Go ---
+GoBlog.exe
+*.test
+*.out
+vendor/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+
+# --- 日志 ---
+*.log
+logger/**/*.log
+
+# --- IDE / 系统 ---
+.idea/
+.vs/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- 其他 ---
+.../
+.continue/

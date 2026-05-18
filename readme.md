@@ -164,10 +164,10 @@ set SEARCH_API_KEY=your-key
 
 **NSQ 统计消费者如何批量落库**
 
-- 初始化：`bootstrap.Init()` 在 `setting.Conf.NSQConfig.Enabled` 为 true 时调用 `mq.InitNSQ()`
+- 初始化：`bootstrap.Init()` 在 `setting.Conf.NSQConfig.Enabled` 为 true 时调用 `mq.InitNSQ(addr, db, rdb, mq.WorkerFlushOptions{...})`，flush 参数来自 `setting.Conf.NSQConfig`（`stats_flush_seconds` / `stats_flush_max_keys` 等，见 `setting/common.yaml`）。
 - 消费者：`mq.StatsWorker`（注册 topic：`article_stats`，channel：`stats_sync_group`）
 	- `HandleMessage()` 将 view/like delta 先写入内存 buffer（map 聚合）
-	- 定时 flush（默认 1 分钟）：`StartFlushTicks()` → `flush()`
+	- **定时或与 buffer 内 key 规模触发 flush（二者 OR）**：`StartFlushTicks()` 内 `select(ticker, flushSig)`，`flush()` 在独立 goroutine 串行执行，避免在 NSQ 回调里跑长事务
 	- 批量事务落库：`database.ArticleRepository.BatchIncrementStats()`
 		- 通过 `UPDATE ... SET view_count = view_count + ?` / `like_count = like_count + ?` 实现增量更新
 	- flush 成功后才从 buffer 扣减；失败则保留 buffer，下次重试（至少一次投递语义）。
@@ -190,7 +190,7 @@ set SEARCH_API_KEY=your-key
 
 **Kafka 消费者：落地到 Elasticsearch**
 
-- 初始化：`bootstrap.Init()` 在 `setting.Conf.KafkaConfig.Enabled` 为 true 时调用 `mq.InitKafka()`，并在 `app.StartWorkers()` 启动 consumers。
+- 初始化：`bootstrap.Init()` 在 `setting.Conf.KafkaConfig.Enabled` 为 true 时调用 `mq.InitKafka(brokers, groupID, pointsEarnMaxRetries)`，并在 `app.StartWorkers()` 启动 consumers（含 `points.earn` 与 DLQ `points.earn.dlq`）。
 - Consumer：`handler.SearchHandler.ProcessSearchSyncMessage()`
 	- 若搜索未启用（`search.Enabled()==false`）则直接跳过
 	- `search.UpsertArticle()` 用 `IndexRequest` 以 `DocumentID=<id>` upsert 文档

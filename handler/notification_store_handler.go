@@ -47,6 +47,11 @@ func (h *NotificationStoreHandler) ProcessNotificationStoreMessage(ctx context.C
 		return nil
 	}
 
+	now := time.Now()
+	created := time.Unix(p.CreatedAt, 0)
+	if p.CreatedAt == 0 {
+		created = now
+	}
 	notification := &models.Notification{
 		EventID:    p.EventID,
 		UserID:     p.UserID,
@@ -54,8 +59,13 @@ func (h *NotificationStoreHandler) ProcessNotificationStoreMessage(ctx context.C
 		SenderName: p.SenderName,
 		Content:    p.Content,
 		Type:       p.Type,
-		IsRead:     false,
-		CreatedAt:  time.Unix(p.CreatedAt, 0),
+		IsRead:     p.IsRead,
+		CreatedAt:  created,
+		UpdatedAt:  now,
+	}
+	if p.IsRead {
+		t := now
+		notification.ReadAt = &t
 	}
 
 	h.mu.Lock()

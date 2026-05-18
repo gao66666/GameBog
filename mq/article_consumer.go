@@ -2,6 +2,7 @@ package mq
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -15,18 +16,43 @@ type StatsWorker struct {
 	mu            sync.Mutex
 	viewBuffer    map[uint64]int
 	likeBuffer    map[uint64]int
+	// likeInsert 待异步插入的 article_likes（key=uid:aid，由带 user_id 的 like 消息产生）
+	likeInsert map[string]struct {
+		UserID    uint64
+		ArticleID uint64
+	}
+	// unlikeDelete 待异步删除的 article_likes 行（key=uid:aid）
+	unlikeDelete map[string]struct {
+		UserID    uint64
+		ArticleID uint64
+	}
 	flushInterval time.Duration
+	flushMaxKeys  int
+	flushSig      chan struct{}
 
 	articleDB *database.ArticleRepository // 仅处理 MySQL 批量落库
 }
 
-// 传入依赖：mysqlRepo 负责数据库
-func NewStatsWorker(mysqlRepo *database.ArticleRepository) *StatsWorker {
+// NewStatsWorker mysqlRepo 负责数据库；interval<=0 时使用 1 分钟；maxKeys<=0 时不按 buffer 规模触发 flush（仅定时）。
+func NewStatsWorker(mysqlRepo *database.ArticleRepository, interval time.Duration, maxKeys int) *StatsWorker {
+	if interval <= 0 {
+		interval = 1 * time.Minute
+	}
 	return &StatsWorker{
 		viewBuffer:    make(map[uint64]int),
 		likeBuffer:    make(map[uint64]int),
-		flushInterval: 1 * time.Minute,
-		articleDB:     mysqlRepo, // 对应 MySQL
+		unlikeDelete: make(map[string]struct {
+			UserID    uint64
+			ArticleID uint64
+		}),
+		likeInsert: make(map[string]struct {
+			UserID    uint64
+			ArticleID uint64
+		}),
+		flushInterval: interval,
+		flushMaxKeys:  maxKeys,
+		flushSig:      make(chan struct{}, 1),
+		articleDB:     mysqlRepo,
 	}
 }
 
@@ -46,42 +72,70 @@ func (w *StatsWorker) HandleMessage(m *nsq.Message) error {
 		return nil
 	}
 
-	var likeDelta int
+	w.mu.Lock()
 	switch msg.Type {
 	case "view":
-		w.mu.Lock()
 		w.viewBuffer[msg.ArticleID]++
-		w.mu.Unlock()
 	case "like":
-		likeDelta = 1
+		if msg.UserID != 0 {
+			k := fmt.Sprintf("%d:%d", msg.UserID, msg.ArticleID)
+			w.likeInsert[k] = struct {
+				UserID    uint64
+				ArticleID uint64
+			}{msg.UserID, msg.ArticleID}
+		} else {
+			w.likeBuffer[msg.ArticleID]++
+		}
 	case "unlike":
-		likeDelta = -1
+		delta := -1
+		if msg.LikeDelta != nil {
+			delta = *msg.LikeDelta
+		}
+		if delta != 0 {
+			w.likeBuffer[msg.ArticleID] += delta
+		}
+		if msg.UserID != 0 {
+			k := fmt.Sprintf("%d:%d", msg.UserID, msg.ArticleID)
+			w.unlikeDelete[k] = struct {
+				UserID    uint64
+				ArticleID uint64
+			}{msg.UserID, msg.ArticleID}
+		}
 	default:
+		w.mu.Unlock()
 		zap.L().Warn("未知的文章事件类型，直接确认丢弃", zap.String("type", msg.Type))
 		return nil
 	}
+	approxKeys := len(w.viewBuffer) + len(w.likeBuffer) + len(w.unlikeDelete) + len(w.likeInsert)
+	w.mu.Unlock()
 
-	if msg.Type != "view" {
-		w.mu.Lock()
-		w.likeBuffer[msg.ArticleID] += likeDelta
-		w.mu.Unlock()
+	if w.flushMaxKeys > 0 && approxKeys >= w.flushMaxKeys {
+		select {
+		case w.flushSig <- struct{}{}:
+		default:
+		}
 	}
 
 	return nil
 }
 
-// StartFlushTicks 启动定时任务
+// StartFlushTicks 定时或与 buffer 规模触发 flush（二者 OR，在单独 goroutine 中串行执行）。
 func (w *StatsWorker) StartFlushTicks() {
 	ticker := time.NewTicker(w.flushInterval)
 	go func() {
-		for range ticker.C {
-			w.flush()
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				w.flush()
+			case <-w.flushSig:
+				w.flush()
+			}
 		}
 	}()
 }
 
 func (w *StatsWorker) flush() {
-	// 1. 锁操作：先拷贝快照，但不立刻清空，只有事务成功后再清空
 	w.mu.Lock()
 	views := make(map[uint64]int, len(w.viewBuffer))
 	likes := make(map[uint64]int, len(w.likeBuffer))
@@ -91,14 +145,26 @@ func (w *StatsWorker) flush() {
 	for id, count := range w.likeBuffer {
 		likes[id] = count
 	}
+	unlikeRows := make([]database.ArticleLikePair, 0, len(w.unlikeDelete))
+	unlikeKeys := make([]string, 0, len(w.unlikeDelete))
+	for k, v := range w.unlikeDelete {
+		unlikeKeys = append(unlikeKeys, k)
+		unlikeRows = append(unlikeRows, database.ArticleLikePair{UserID: v.UserID, ArticleID: v.ArticleID})
+	}
+	likeRows := make([]database.ArticleLikePair, 0, len(w.likeInsert))
+	likeKeys := make([]string, 0, len(w.likeInsert))
+	for k, v := range w.likeInsert {
+		likeKeys = append(likeKeys, k)
+		likeRows = append(likeRows, database.ArticleLikePair{UserID: v.UserID, ArticleID: v.ArticleID})
+	}
 	w.mu.Unlock()
 
-	if len(views) == 0 && len(likes) == 0 {
+	if len(views) == 0 && len(likes) == 0 && len(unlikeRows) == 0 && len(likeRows) == 0 {
 		return
 	}
 
-	if err := w.articleDB.BatchIncrementStats(views, likes); err != nil {
-		zap.L().Warn("统计数据批量落库失败，将保留缓冲区等待下次重试", zap.Error(err))
+	if err := w.articleDB.BatchFlushArticleActions(views, likes, likeRows, unlikeRows); err != nil {
+		zap.L().Warn("文章统计/点赞批量落库失败，将保留缓冲区等待下次重试", zap.Error(err))
 		return
 	}
 
@@ -115,6 +181,12 @@ func (w *StatsWorker) flush() {
 			delete(w.likeBuffer, aid)
 		}
 	}
+	for _, k := range unlikeKeys {
+		delete(w.unlikeDelete, k)
+	}
+	for _, k := range likeKeys {
+		delete(w.likeInsert, k)
+	}
 	w.mu.Unlock()
 
 	zap.L().Info("统计数据批量落库完成")
@@ -125,14 +197,21 @@ type CommentStatsWorker struct {
 	mu            sync.Mutex
 	likeBuffer    map[uint64]int
 	flushInterval time.Duration
+	flushMaxKeys  int
+	flushSig      chan struct{}
 
 	commentDB *database.CommentRepository
 }
 
-func NewCommentStatsWorker(commentDB *database.CommentRepository) *CommentStatsWorker {
+func NewCommentStatsWorker(commentDB *database.CommentRepository, interval time.Duration, maxKeys int) *CommentStatsWorker {
+	if interval <= 0 {
+		interval = 1 * time.Minute
+	}
 	return &CommentStatsWorker{
 		likeBuffer:    make(map[uint64]int),
-		flushInterval: 1 * time.Minute,
+		flushInterval: interval,
+		flushMaxKeys:  maxKeys,
+		flushSig:      make(chan struct{}, 1),
 		commentDB:     commentDB,
 	}
 }
@@ -153,28 +232,41 @@ func (w *CommentStatsWorker) HandleMessage(m *nsq.Message) error {
 		return nil
 	}
 
-	var delta int
+	w.mu.Lock()
 	switch msg.Type {
 	case "like":
-		delta = 1
+		w.likeBuffer[msg.CommentID]++
 	case "unlike":
-		delta = -1
+		w.likeBuffer[msg.CommentID]--
 	default:
+		w.mu.Unlock()
 		zap.L().Warn("未知的评论事件类型，直接确认丢弃", zap.String("type", msg.Type))
 		return nil
 	}
-
-	w.mu.Lock()
-	w.likeBuffer[msg.CommentID] += delta
+	n := len(w.likeBuffer)
 	w.mu.Unlock()
+
+	if w.flushMaxKeys > 0 && n >= w.flushMaxKeys {
+		select {
+		case w.flushSig <- struct{}{}:
+		default:
+		}
+	}
+
 	return nil
 }
 
 func (w *CommentStatsWorker) StartFlushTicks() {
 	ticker := time.NewTicker(w.flushInterval)
 	go func() {
-		for range ticker.C {
-			w.flush()
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				w.flush()
+			case <-w.flushSig:
+				w.flush()
+			}
 		}
 	}()
 }

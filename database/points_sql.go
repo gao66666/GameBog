@@ -1,6 +1,7 @@
 package database
 
 import (
+	"errors"
 	"time"
 
 	"github.com/gao66666/GoBlog/models"
@@ -9,12 +10,14 @@ import (
 	"gorm.io/gorm"
 )
 
+// ErrPointsTxnIdempotentSkip 流水主键 txn_id 已存在：本笔为重复请求/重复消费，余额不应再次变更。
+var ErrPointsTxnIdempotentSkip = errors.New("points txn idempotent skip")
+
 var (
 	ErrInitPoints           = tool.NewBizError(500, 50010, "积分表初始化失败")
 	ErrWalletNotFound       = tool.NewBizError(404, 40020, "积分账户不存在")
 	ErrInsufficientBalance  = tool.NewBizError(400, 40021, "积分余额不足")
 	ErrConcurrentModify     = tool.NewBizError(409, 40022, "积分账户并发修改，请重试")
-	ErrOutboxNotFound       = tool.NewBizError(404, 40023, "积分发件箱消息不存在")
 	ErrDailyLimitExceeded   = tool.NewBizError(400, 40024, "今日积分获取已达上限")
 )
 
@@ -30,7 +33,6 @@ func (r *PointsRepository) InitTable() error {
 	if err := r.db.AutoMigrate(
 		&models.UserWallet{},
 		&models.PointsTransaction{},
-		&models.PointsOutbox{},
 	); err != nil {
 		return ErrInitPoints
 	}
@@ -117,44 +119,36 @@ func (r *PointsRepository) UpdateBalance(tx *gorm.DB, userID uint64, amount int6
 	return nil
 }
 
-// InsertTransaction 插入积分流水记录
+// InsertTransaction 插入积分流水记录（遇主键冲突返回错误；幂等场景请用 TryInsertTransaction）。
 func (r *PointsRepository) InsertTransaction(tx *gorm.DB, txn *models.PointsTransaction) error {
 	return tx.Create(txn).Error
 }
 
-// InsertOutbox 插入积分发件箱消息（与业务操作在同一事务）
-func (r *PointsRepository) InsertOutbox(tx *gorm.DB, outbox *models.PointsOutbox) error {
-	return tx.Create(outbox).Error
-}
-
-// GetPendingOutbox 获取待发送的积分消息
-func (r *PointsRepository) GetPendingOutbox(limit int) ([]models.PointsOutbox, error) {
-	var outbox []models.PointsOutbox
-	err := r.db.Where("status = ?", models.PointsOutboxStatusPending).
-		Order("id ASC").
-		Limit(limit).
-		Find(&outbox).Error
-	if err != nil {
-		return nil, err
+// TxnIDExists 是否已有该 txn_id 流水（用于在 Redis 日上限之前短路，避免重复消费多扣次数）。
+func (r *PointsRepository) TxnIDExists(txnID uint64) (bool, error) {
+	if txnID == 0 {
+		return false, nil
 	}
-	return outbox, nil
+	var row models.PointsTransaction
+	err := r.db.Select("txn_id").Where("txn_id = ?", txnID).First(&row).Error
+	if err == gorm.ErrRecordNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
-// MarkOutboxSent 标记发件箱消息为已发送
-func (r *PointsRepository) MarkOutboxSent(id uint64) error {
-	return r.db.Model(&models.PointsOutbox{}).
-		Where("id = ?", id).
-		Update("status", models.PointsOutboxStatusSent).Error
-}
-
-// MarkOutboxFailed 标记发件箱消息为失败
-func (r *PointsRepository) MarkOutboxFailed(id uint64) error {
-	return r.db.Model(&models.PointsOutbox{}).
-		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"status":      models.PointsOutboxStatusFailed,
-			"retry_count": gorm.Expr("retry_count + 1"),
-		}).Error
+// TryInsertTransaction 插入流水；主键 txn_id 冲突时返回 inserted=false（无错误），供与 UpdateBalance 同事务幂等。
+func (r *PointsRepository) TryInsertTransaction(tx *gorm.DB, txn *models.PointsTransaction) (inserted bool, err error) {
+	if err := tx.Create(txn).Error; err != nil {
+		if isDuplicateKeyError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // GetWalletByUserIDTx 事务内获取钱包（乐观读取，不带锁）
@@ -168,4 +162,27 @@ func (r *PointsRepository) GetWalletByUserIDTx(tx *gorm.DB, userID uint64) (*mod
 		return nil, err
 	}
 	return &wallet, nil
+}
+
+// PointsWalletLedgerMismatch 钱包余额与流水 Σ(amount) 不一致（当前流水均为收入，Σ 应与 balance 对齐）。
+type PointsWalletLedgerMismatch struct {
+	UserID    uint64 `gorm:"column:user_id"`
+	Balance   int64  `gorm:"column:balance"`
+	LedgerSum int64  `gorm:"column:ledger_sum"`
+}
+
+// ListWalletLedgerMismatches 对账抽样：仅返回前 limit 条不一致用户。
+func (r *PointsRepository) ListWalletLedgerMismatches(limit int) ([]PointsWalletLedgerMismatch, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var rows []PointsWalletLedgerMismatch
+	err := r.db.Raw(`
+SELECT w.user_id, w.balance, COALESCE(SUM(t.amount), 0) AS ledger_sum
+FROM user_wallets w
+LEFT JOIN points_transactions t ON t.user_id = w.user_id
+GROUP BY w.user_id, w.balance
+HAVING w.balance <> COALESCE(SUM(t.amount), 0)
+LIMIT ?`, limit).Scan(&rows).Error
+	return rows, err
 }

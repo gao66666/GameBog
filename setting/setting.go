@@ -72,11 +72,21 @@ type KafkaConfig struct {
 	Enabled bool     `mapstructure:"enabled"`
 	Brokers []string `mapstructure:"brokers"`
 	GroupID string   `mapstructure:"group_id"`
+	// PointsEarnMaxRetries 积分入账消费单条消息最大处理尝试次数（含首次），仍失败则写入 DLQ 并提交 offset。<=0 时由 setDefaults 设为 3。
+	PointsEarnMaxRetries int `mapstructure:"points_earn_max_retries"`
 }
 
 type NSQConfig struct {
 	Enabled bool   `mapstructure:"enabled"`
 	Addr    string `mapstructure:"addr"`
+	// StatsFlushSeconds 文章阅读/点赞统计批量落库周期（秒）。<=0 时由 setDefaults 设为 60。
+	StatsFlushSeconds int `mapstructure:"stats_flush_seconds"`
+	// StatsFlushMaxKeys 文章统计 buffer 内「待刷新的 key 数」近似上限（len(view)+len(like)），达到后触发 flush，避免单次事务过大。<=0 时默认 2000。
+	StatsFlushMaxKeys int `mapstructure:"stats_flush_max_keys"`
+	// CommentFlushSeconds 评论点赞统计落库周期（秒）。<=0 时与 StatsFlushSeconds 相同。
+	CommentFlushSeconds int `mapstructure:"comment_flush_seconds"`
+	// CommentFlushMaxKeys 评论点赞 buffer 上限。<=0 时与 StatsFlushMaxKeys 相同。
+	CommentFlushMaxKeys int `mapstructure:"comment_flush_max_keys"`
 }
 
 type SearchConfig struct {
@@ -193,8 +203,23 @@ func setDefaults() {
 	if Conf.KafkaConfig.GroupID == "" {
 		Conf.KafkaConfig.GroupID = "goblog-workers"
 	}
+	if Conf.KafkaConfig.PointsEarnMaxRetries <= 0 {
+		Conf.KafkaConfig.PointsEarnMaxRetries = 3
+	}
 	if Conf.NSQConfig.Addr == "" {
 		Conf.NSQConfig.Addr = "127.0.0.1:4150"
+	}
+	if Conf.NSQConfig.StatsFlushSeconds <= 0 {
+		Conf.NSQConfig.StatsFlushSeconds = 60
+	}
+	if Conf.NSQConfig.StatsFlushMaxKeys <= 0 {
+		Conf.NSQConfig.StatsFlushMaxKeys = 2000
+	}
+	if Conf.NSQConfig.CommentFlushSeconds <= 0 {
+		Conf.NSQConfig.CommentFlushSeconds = Conf.NSQConfig.StatsFlushSeconds
+	}
+	if Conf.NSQConfig.CommentFlushMaxKeys <= 0 {
+		Conf.NSQConfig.CommentFlushMaxKeys = Conf.NSQConfig.StatsFlushMaxKeys
 	}
 	if Conf.SearchConfig.Index == "" {
 		Conf.SearchConfig.Index = "articles"

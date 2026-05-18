@@ -1,3 +1,5 @@
+# Agent 对话模型提示词：同目录 prompts.yaml，保存后按文件 mtime 热加载，无需重启进程。
+
 llm:
   base_url: "https://open.bigmodel.cn/api/paas/v4"
   api_key: "1679da024e4048c3bc0281f20d3259e9.mcUA5BcVvxZ2ZPVy"
@@ -75,6 +77,16 @@ memory:
   hybrid_keyword_recall: true
   # 可选：RRF 的 k（仅当设置时用 RrfQuery；不设则用 FusionQuery(RRF) 默认）
   # hybrid_rrf_k: 60
+
+# 编排：强制 分析₁→检索→计划→分析₂→执行（关闭则回退为仅改写/路由后直接执行）
+orchestration:
+  planning_round_enabled: true
+  # 用户可见输出完成后异步结构化日志（自我反思链路底座）
+  post_turn_async_log: true
+  # 自我反思与纠正：异步调用 summary_llm 产出质检 JSON，仅写日志，不二次写长期记忆、不阻塞 SSE
+  reflection_llm_enabled: false
+  reflection_max_user_chars: 4000
+  reflection_max_assistant_chars: 8000
 
 decision_llm:
   base_url: "https://open.bigmodel.cn/api/paas/v4"

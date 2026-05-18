@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gao66666/GoBlog/models"
-	"github.com/gao66666/GoBlog/mq"
 	"github.com/gao66666/GoBlog/service"
 	"github.com/gao66666/GoBlog/tool"
 	"github.com/gin-gonic/gin"
@@ -79,10 +77,7 @@ func (h *DMHandler) SendMessage(c *gin.Context) {
 		h.se.IncrUnread(p.ToUserID)
 	}
 
-	// 通过通知链路推送“新私信”提醒：
-	// - 对方在线：WS 实时收到
-	// - 对方离线：触发未读红点 + 离线落库，后续上线自动同步
-	// 若 Kafka 未启用，则降级为直接 WS 推送（仅在线可见）。
+	// 「新私信」提醒：先本机 WebSocket，离线则异步落库（与评论/关注通知同源）
 	senderName := fmt.Sprintf("UID:%d", uid)
 	if n := h.se.ResolveUserName(uid); n != "" {
 		senderName = n
@@ -93,17 +88,8 @@ func (h *DMHandler) SendMessage(c *gin.Context) {
 		preview = string(r[:15]) + "..."
 	}
 	content := fmt.Sprintf("%s 给你发了私信：%s", senderName, preview)
-	if err := mq.PublishNotification(p.ToUserID, uid, senderName, content, "dm"); err != nil {
-		// 常见原因：Kafka 未启用（writer 为 nil）。
-		// 降级策略：
-		// - 对方在线：直接 WS 推送（不依赖 Kafka）
-		// - 对方离线：直接落库通知 + 未读红点，确保对方上线后能同步到
-		zap.L().Warn("私信通知入队失败，执行降级逻辑", zap.Uint64("to_uid", p.ToUserID), zap.Error(err))
-		if h.isUserOnline(p.ToUserID) {
-			// 已在上面做过直推，这里不重复
-		} else {
-			h.persistOfflineDMNotification(p.ToUserID, uid, senderName, content)
-		}
+	if h.notif != nil {
+		h.notif.NotifyPushOrStore(p.ToUserID, uid, senderName, content, "dm")
 	}
 
 	tool.ResponseSuccess(c, gin.H{"sent_at": m.SentAt.Format("2006-01-02 15:04:05")}, "ok")
@@ -161,32 +147,6 @@ func (h *DMHandler) isUserOnline(userID uint64) bool {
 	return ok && s != nil && !s.IsClosed()
 }
 
-func (h *DMHandler) persistOfflineDMNotification(toUserID uint64, fromUserID uint64, senderName string, content string) {
-	if h == nil || h.notif == nil || toUserID == 0 {
-		return
-	}
-	// 1) 未读红点
-	if h.notif.redisNotification != nil {
-		_ = h.notif.redisNotification.SetHasUnread(toUserID)
-	}
-
-	// 2) 直接落库（不依赖 Kafka），保证用户上线后能同步到通知列表
-	if h.notif.notificationRepo != nil {
-		n := &models.Notification{
-			EventID:    tool.GenerateID(),
-			UserID:     toUserID,
-			SenderID:   fromUserID,
-			SenderName: senderName,
-			Content:    content,
-			Type:       "dm",
-			IsRead:     false,
-			CreatedAt:  time.Now(),
-			UpdatedAt:  time.Now(),
-		}
-		_ = h.notif.notificationRepo.BatchCreateNotifications([]*models.Notification{n})
-	}
-}
-
 func (h *DMHandler) pushDMToUser(toUserID uint64, fromUserID uint64, m *models.DirectMessage) {
 	if h == nil || h.notif == nil || toUserID == 0 || fromUserID == 0 || m == nil {
 		return
@@ -213,5 +173,7 @@ func (h *DMHandler) pushDMToUser(toUserID uint64, fromUserID uint64, m *models.D
 	if err := session.Write(b); err != nil {
 		zap.L().Warn("私信WS推送失败", zap.Uint64("to_uid", toUserID), zap.Error(err))
 		h.notif.Conns.Delete(toUserID)
+		return
 	}
+	h.notif.touchWSIdleTimer(toUserID)
 }

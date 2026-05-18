@@ -2,10 +2,9 @@
 长期记忆管理器。
 
 职责：
-1. 判断哪些内容值得长期记忆
-2. 将“规则或者要求/身份/偏好/状态”写入 MongoDB
-3. 将“经验/案例/背景/知识”写入 Qdrant
-4. 提供会话结束、超时、显式“记住这个”时的统一入口
+1. 单次 Memory Manager LLM：**门控是否值得写** + **抽取**原子条目（mongo/qdrant）
+2. 单次 decision_llm：**与已有记忆对比后决策**（add/overwrite/ignore 等）并落库
+3. MongoDB 结构化事实、Qdrant 向量经验；会话结束等入口见 ``maybe_commit_long_term``
 """
 
 from __future__ import annotations
@@ -61,19 +60,45 @@ _MANAGER_LLM: ChatOpenAI | None = None
 _DECISION_LLM: ChatOpenAI | None = None
 
 
-LONG_TERM_TRIGGER_PROMPT = """你是「长期记忆」流水线里的触发判定器。输入 JSON 里会有 user_message、assistant_text、reason（聊天场景里多为 auto）。
+# 强制进入「尽力抽取」的 reason：不再做 worth_storing 门控（与旧版「触发器恒 true」一致）。
+_FORCE_LONG_TERM_EXTRACT_REASONS = frozenset(
+    {"explicit_remember", "session_end", "timeout", "ws_close"}
+)
 
-你只回答一件事：这一轮对话是否值得进入下一步「抽取原子事实并入库」。不要求你区分 Mongo / Qdrant。
+# 单次 LLM：门控「是否值得写」+ 原子条目抽取（决策与落库仍由 _call_decision_llm + _apply_* 负责）。
+LONG_TERM_GATE_AND_EXTRACT_PROMPT = """你是 Memory Manager Agent：在一次输出里完成两件事——
+（1）判断本轮是否**值得**进入长期记忆管线（仅当 reason 为 auto 等**普通聊天**时生效）；
+（2）若值得（或 reason 要求强制抽取），从上下文中抽出「值得长期保留」的原子条目。
 
-原则（重要）：
-1. 当用户要求记住某个内容时，应当判 true。
-2. **倾向判 true 的情况**：用户说了关于自己的相对稳定信息——职业、身份、兴趣、习惯、好恶、对你的规则要求、用户的经历片段、案例等重要的个人信息；不必出现固定关键词。
-3. **判 false** 的典型：纯寒暄无信息；只有一次性解题/翻译/写代码且与用户长期画像无关；临时指令且不隐含稳定偏好。
+## 门控 worth_storing（仅当 reason **不是** session_end / timeout / ws_close / explicit_remember 时你必须认真判断）
+- **worth_storing=true**：用户要求记住；或用户说了关于自己的相对稳定信息（职业、身份、兴趣、习惯、规则、偏好、经历片段等）；**略沾边就 true**，让下游决策模型处理重复与冲突。
+- **worth_storing=false**：纯寒暄；一次性解题/翻译/写代码且与用户长期画像无关；临时指令且无稳定偏好。**false 时 items 必须为空数组**。
 
-边界情况：**稍微沾一点用户画像或「要记住」的意思，就判 true**，让下游决定是否真有条目可写。
+当 reason **属于** session_end / timeout / ws_close / explicit_remember：**忽略 worth_storing 的语义**（仍可填），必须依据 recent_messages、mid_summaries、user_message、assistant_text **尽力抽取**；仅当绝对没有任何可写长期事实时 items 才可为空。
 
-只返回严格 JSON（勿 markdown）：
-{"store": true|false, "reason": "20字内"}
+## 条目怎么拆（worth 为 true 或强制 reason 时）
+- 用户自我介绍、职业、兴趣、习惯、规则、稳定偏好 → 一般 **mongo**（profile / preference / rule 等 kind）。
+- 经历、案例、较长叙事 → **qdrant**（experience / case / background）。
+- 用户明确「希望你记住」→ 写成具体条目。
+
+## 输出（严格 JSON，勿 markdown）
+{
+  "worth_storing": true,
+  "gate_reason": "20字内，说明门控或强制模式下的判断",
+  "items": [
+    {
+      "store": "mongo|qdrant",
+      "kind": "rule|profile|status|preference|experience|case|background",
+      "title": "短标题",
+      "content": "一条清晰的原子事实",
+      "tags": ["可选"],
+      "importance": 1,
+      "confidence": 0.6,
+      "evidence": "依据上下文哪一句"
+    }
+  ]
+}
+同类合并，**items 最多 5 条**。若 worth_storing 为 false（且非强制 reason），items 必须为 []。
 """
 
 
@@ -282,48 +307,144 @@ async def _ensure_qdrant_collection() -> None:
     await asyncio.to_thread(_ensure_qdrant_collection_core)
 
 
-async def should_trigger_long_term_by_prompt(user_message: str, assistant_text: str = "", reason: str = "") -> bool:
-    """用提示词判断是否需要写入长期记忆。"""
-    if reason in {"explicit_remember", "session_end", "timeout", "ws_close"}:
-        return True
-    if not user_message.strip() and not assistant_text.strip():
-        return False
+def _normalize_extracted_items(items: Any) -> list[dict[str, Any]]:
+    """将模型输出的 items 列表规范为内部条目结构。"""
+    if not isinstance(items, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in items[:5]:
+        if not isinstance(item, dict):
+            continue
+        store = item.get("store")
+        content = str(item.get("content", "")).strip()
+        title = str(item.get("title", "")).strip()
+        if store not in {"mongo", "qdrant"} or not content:
+            continue
+        normalized.append(
+            {
+                "store": store,
+                "kind": str(item.get("kind", "background")).strip() or "background",
+                "title": title or content[:24],
+                "content": content,
+                "tags": item.get("tags", []) if isinstance(item.get("tags", []), list) else [],
+                "importance": int(item.get("importance", 1) or 1),
+                "confidence": float(item.get("confidence", 0.6) or 0.6),
+                "evidence": str(item.get("evidence", "")).strip(),
+            }
+        )
+    return normalized
 
+
+def _parse_bool_gate(val: Any) -> bool | None:
+    """解析 worth_storing；无法解析时返回 None（调用方按 True 处理）。"""
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in ("true", "1", "yes"):
+            return True
+        if s in ("false", "0", "no"):
+            return False
+    return None
+
+
+async def _extract_memory_items_gated(
+    user_id: int,
+    reason: str,
+    user_message: str,
+    assistant_text: str,
+    recent_messages: list[dict],
+    mid_summaries: list[dict],
+) -> list[dict[str, Any]]:
+    """单次 Memory Manager LLM：门控「是否值得写」+ 原子条目抽取（决策仍由 _call_decision_llm 单独一步）。"""
     if _MANAGER_LLM is None:
         await init_memory_services()
 
     payload = {
+        "user_id": user_id,
         "reason": reason,
         "user_message": user_message,
         "assistant_text": assistant_text,
+        "recent_messages": recent_messages,
+        "mid_summaries": mid_summaries,
     }
-    raw_llm = ""
-    try:
-        response = await _MANAGER_LLM.ainvoke([
-            {"role": "system", "content": LONG_TERM_TRIGGER_PROMPT},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ])
-        raw_llm = response.content.strip()
-        text = raw_llm
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1]
-            if text.endswith("```"):
-                text = text[:-3]
+    response = await _MANAGER_LLM.ainvoke([
+        {"role": "system", "content": LONG_TERM_GATE_AND_EXTRACT_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ])
 
+    text = (response.content or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1]
+        if text.endswith("```"):
+            text = text[:-3]
+
+    try:
         data = json.loads(text)
-        if isinstance(data, dict) and isinstance(data.get("store"), bool):
-            return data["store"]
-        _log.warning(
-            f"记忆链路 [触发] 拒绝：模型返回缺少布尔字段 store raw={_lt_preview(raw_llm, 400)}"
-        )
     except json.JSONDecodeError as e:
         _log.warning(
-            f"记忆链路 [触发] 拒绝：JSON 解析失败 err={e!s} raw={_lt_preview(raw_llm, 400)}"
+            f"记忆链路 [门控+抽取] 拒绝：非合法 JSON user_id={user_id} err={e!s} raw={_lt_preview(text, 500)}"
         )
-    except Exception as e:
-        _log.warning(f"记忆链路 [触发] 拒绝：调用异常 err={str(e)[:300]} raw={_lt_preview(raw_llm, 200)}")
+        return []
 
-    return False
+    if not isinstance(data, dict):
+        _log.warning(f"记忆链路 [门控+抽取] 拒绝：根非对象 user_id={user_id}")
+        return []
+
+    force = reason in _FORCE_LONG_TERM_EXTRACT_REASONS
+    worth_raw = data.get("worth_storing", True)
+    worth = _parse_bool_gate(worth_raw)
+    items_raw = data.get("items", [])
+    if not isinstance(items_raw, list):
+        _log.warning(f"记忆链路 [门控+抽取] 拒绝：items 非列表 user_id={user_id}")
+        return []
+
+    if not force:
+        if worth is False:
+            return []
+        # worth is True 或 None：允许继续规范化（略宽松，避免误杀）
+
+    return _normalize_extracted_items(items_raw)
+
+
+async def should_trigger_long_term_by_prompt(user_message: str, assistant_text: str = "", reason: str = "") -> bool:
+    """是否值得走长期写入（兼容旧调用方）。强制 reason 恒 true；否则与门控+抽取同一次 LLM 等价于「是否有条目」。"""
+    if reason in _FORCE_LONG_TERM_EXTRACT_REASONS:
+        return True
+    if not user_message.strip() and not assistant_text.strip():
+        return False
+    items = await _extract_memory_items_gated(
+        user_id=0,
+        reason=reason,
+        user_message=user_message,
+        assistant_text=assistant_text,
+        recent_messages=[],
+        mid_summaries=[],
+    )
+    return len(items) > 0
+
+
+async def run_long_term_memory_write_agent(
+    user_id: int,
+    *,
+    reason: str,
+    user_message: str,
+    assistant_text: str,
+    recent_messages: list[dict],
+    mid_summaries: list[dict],
+) -> dict[str, int]:
+    """长期记忆写入：1) 单次 LLM 门控+抽取 → 2) 读库 + decision_llm 决策 + 落库。"""
+    items = await _extract_memory_items_gated(
+        user_id=user_id,
+        reason=reason,
+        user_message=user_message,
+        assistant_text=assistant_text,
+        recent_messages=recent_messages,
+        mid_summaries=mid_summaries,
+    )
+    return await _store_memory_items(user_id, items)
 
 
 async def maybe_commit_long_term(
@@ -334,23 +455,17 @@ async def maybe_commit_long_term(
     recent_messages: list[dict] | None = None,
     mid_summaries: list[dict] | None = None,
 ) -> dict[str, int]:
-    """统一的长期记忆入口。"""
-    if not await should_trigger_long_term_by_prompt(user_message, assistant_text, reason):
-        return {"mongo": 0, "qdrant": 0}
-
+    """统一的长期记忆入口（HTTP session-end 等）：门控+抽取与决策均在 ``run_long_term_memory_write_agent`` 内。"""
     if recent_messages is None or mid_summaries is None:
         recent_messages, mid_summaries = await _load_context(user_id)
-
-    items = await _extract_memory_items(
-        user_id=user_id,
+    return await run_long_term_memory_write_agent(
+        user_id,
         reason=reason,
         user_message=user_message,
         assistant_text=assistant_text,
         recent_messages=recent_messages,
         mid_summaries=mid_summaries,
     )
-    out = await _store_memory_items(user_id, items)
-    return out
 
 
 async def get_long_term_context(
@@ -817,100 +932,6 @@ async def _load_context(user_id: int) -> tuple[list[dict], list[dict]]:
     recent_messages = await get_short_messages(user_id, short_limit)
     mid_summaries = await get_mid_summaries(user_id, mid_limit)
     return recent_messages, mid_summaries
-
-
-async def _extract_memory_items(
-    user_id: int,
-    reason: str,
-    user_message: str,
-    assistant_text: str,
-    recent_messages: list[dict],
-    mid_summaries: list[dict],
-) -> list[dict[str, Any]]:
-    """把对话压成原子长期记忆条目，并按 Mongo/Qdrant 路由。"""
-    if _MANAGER_LLM is None:
-        await init_memory_services()
-
-    system_prompt = """你是 Memory Manager Agent：从本轮对话里抽出「值得长期保留」的原子条目，只输出 JSON。
-
-怎么拆：
-- 用户自我介绍、职业、兴趣、习惯等重要个人信息以及规则类要求、稳定偏好 → 一般走 mongo（profile / preference / rule 等 kind）。
-- 经历、知识、案例、经验、较长叙事 → 可走 qdrant（experience / case / background）。
-- 口语、玩笑、emoji 不影响：只要是在陈述关于用户自己的稳定事实，都要抽出来写进 content。
-- 若用户表达了「希望你记住 / 以后还记得」这类意图，要把对应事实写成条目，不要空列表敷衍。
-
-输出格式（不要用 markdown）：
-{
-  "items": [
-    {
-      "store": "mongo|qdrant",
-      "kind": "rule|profile|status|preference|experience|case|background",
-      "title": "短标题",
-      "content": "一条清晰的原子事实",
-      "tags": ["可选"],
-      "importance": 1,
-      "confidence": 0.6,
-      "evidence": "简要说明依据 user_message 或 assistant_text 哪部分"
-    }
-  ]
-}
-同类合并，最多 5 条。若确实没有任何与用户长期相关的实质信息，才返回 {"items": []}。
-"""
-
-    payload = {
-        "user_id": user_id,
-        "reason": reason,
-        "user_message": user_message,
-        "assistant_text": assistant_text,
-        "recent_messages": recent_messages,
-        "mid_summaries": mid_summaries,
-    }
-    response = await _MANAGER_LLM.ainvoke([
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ])
-
-    text = response.content.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1]
-        if text.endswith("```"):
-            text = text[:-3]
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        _log.warning(
-            f"记忆链路 [抽取] 拒绝：输出非合法 JSON user_id={user_id} err={e!s} raw={_lt_preview(text, 500)}"
-        )
-        return []
-
-    items = data.get("items", []) if isinstance(data, dict) else []
-    if not isinstance(items, list):
-        _log.warning(f"记忆链路 [抽取] 拒绝：items 不是列表 user_id={user_id} raw={_lt_preview(text, 300)}")
-        return []
-
-    normalized: list[dict[str, Any]] = []
-    for item in items[:5]:
-        if not isinstance(item, dict):
-            continue
-        store = item.get("store")
-        content = str(item.get("content", "")).strip()
-        title = str(item.get("title", "")).strip()
-        if store not in {"mongo", "qdrant"} or not content:
-            continue
-        normalized.append(
-            {
-                "store": store,
-                "kind": str(item.get("kind", "background")).strip() or "background",
-                "title": title or content[:24],
-                "content": content,
-                "tags": item.get("tags", []) if isinstance(item.get("tags", []), list) else [],
-                "importance": int(item.get("importance", 1) or 1),
-                "confidence": float(item.get("confidence", 0.6) or 0.6),
-                "evidence": str(item.get("evidence", "")).strip(),
-            }
-        )
-    return normalized
 
 
 async def _store_memory_items(user_id: int, items: list[dict[str, Any]]) -> dict[str, int]:

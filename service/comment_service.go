@@ -1,23 +1,15 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/gao66666/GoBlog/database"
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/mq"
-	"github.com/gao66666/GoBlog/tool"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
-
-// NotificationPusher 用于在 Kafka 不可用时的降级直推（仅对在线用户）。
-// 返回 true 表示已成功推送。
-type NotificationPusher interface {
-	PushNotification(userID uint64, payload []byte) bool
-}
 
 type CommentService struct {
 	commentRepo *database.CommentRepository
@@ -25,10 +17,8 @@ type CommentService struct {
 	userRepo    *database.UserRepository
 	redisRepo   *database.RedisCommentRepository
 
-	notificationRepo  *database.NotificationRepository
-	redisNotification *database.RedisNotificationRepository
-	pusher            NotificationPusher
-	pointsSvc         *PointsService
+	notifySink mq.NotifySink
+	pointsSvc  *PointsService
 }
 
 func NewCommentService(
@@ -36,9 +26,7 @@ func NewCommentService(
 	dr *database.ArticleRepository,
 	ur *database.UserRepository,
 	rs *database.RedisCommentRepository,
-	notifyRepo *database.NotificationRepository,
-	notifyRedis *database.RedisNotificationRepository,
-	pusher NotificationPusher,
+	notifySink mq.NotifySink,
 	pointsSvc *PointsService,
 ) *CommentService {
 	return &CommentService{
@@ -47,10 +35,8 @@ func NewCommentService(
 		userRepo:    ur,
 		redisRepo:   rs,
 
-		notificationRepo:  notifyRepo,
-		redisNotification: notifyRedis,
-		pusher:            pusher,
-		pointsSvc:         pointsSvc,
+		notifySink: notifySink,
+		pointsSvc:  pointsSvc,
 	}
 }
 
@@ -100,7 +86,7 @@ func (s *CommentService) CreateComment(comment *models.Comment) (*models.Comment
 
 	// 3. 评论积分奖励
 	if s.pointsSvc != nil {
-		if err := s.pointsSvc.EarnPoints(comment.UserID, "comment", comment.ID); err != nil {
+		if err := s.pointsSvc.EnqueueEarn(comment.UserID, "comment", comment.ID, 0); err != nil {
 			zap.L().Warn("评论积分发放失败", zap.Uint64("comment_id", comment.ID), zap.Error(err))
 		}
 	}
@@ -148,50 +134,12 @@ func (s *CommentService) sendCommentNotification(c *models.Comment) {
 		msgType = "comment"
 	}
 
-	// 4. 正式入队
-	if err := mq.PublishNotification(targetID, c.UserID, senderName, msg, msgType); err != nil {
-		zap.L().Warn("通知入队失败，执行降级逻辑",
-			zap.Uint64("to_uid", targetID),
-			zap.Error(err))
-
-		// 降级：优先直推在线用户；否则落库 + 红点，等用户打开 /me 时同步离线未读。
-		p := mq.NotificationPayload{
-			EventID:    tool.GenerateID(),
-			UserID:     targetID,
-			SenderID:   c.UserID,
-			SenderName: senderName,
-			Content:    msg,
-			Type:       msgType,
-			CreatedAt:  time.Now().Unix(),
-		}
-		if s.pusher != nil {
-			if b, e := json.Marshal(p); e == nil {
-				if ok := s.pusher.PushNotification(targetID, b); ok {
-					return
-				}
-			}
-		}
-
-		if s.redisNotification != nil {
-			_ = s.redisNotification.SetHasUnread(targetID)
-		}
-		if s.notificationRepo != nil {
-			n := &models.Notification{
-				EventID:    p.EventID,
-				UserID:     targetID,
-				SenderID:   c.UserID,
-				SenderName: senderName,
-				Content:    msg,
-				Type:       msgType,
-				IsRead:     false,
-				CreatedAt:  time.Now(),
-				UpdatedAt:  time.Now(),
-			}
-			if e := s.notificationRepo.BatchCreateNotifications([]*models.Notification{n}); e != nil {
-				zap.L().Warn("降级落库通知失败", zap.Uint64("to_uid", targetID), zap.Error(e))
-			}
-		}
+	// 4. 先本机 WebSocket，离线则异步落库（见 handler.NotificationHandler.NotifyPushOrStore）
+	if s.notifySink == nil {
+		zap.L().Warn("NotifySink 未注入，评论通知未发送", zap.Uint64("to_uid", targetID))
+		return
 	}
+	s.notifySink.NotifyPushOrStore(targetID, c.UserID, senderName, msg, msgType)
 }
 
 // 服务层拿取到的是用户所有的信息，但我要进行处理，只拿取CommentUser内的信息放入CommentVo
@@ -345,7 +293,7 @@ func (s *CommentService) LikeComment(commentID uint64, userID uint64, isCancel b
 	if actionType == "like" && s.pointsSvc != nil {
 		comment, err := s.commentRepo.GetCommentByID(commentID)
 		if err == nil && comment != nil && comment.UserID != userID {
-			if err := s.pointsSvc.EarnPoints(comment.UserID, "comment_liked", commentID); err != nil {
+			if err := s.pointsSvc.EnqueueEarn(comment.UserID, "comment_liked", commentID, userID); err != nil {
 				zap.L().Warn("评论被点赞积分发放失败",
 					zap.Uint64("comment_id", commentID),
 					zap.Uint64("author_id", comment.UserID),

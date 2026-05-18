@@ -15,6 +15,22 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// 取消点赞：无条件 DEL 用户标记；仅当 stats 中 like > 0 时减 1（避免刷成负数）。
+var articleUnlikeImmediateScript = redis.NewScript(`
+redis.call('DEL', KEYS[2])
+local cur = redis.call('HGET', KEYS[1], 'like')
+if cur == false then
+  return 0
+end
+local n = tonumber(cur)
+if n == nil then n = 0 end
+if n > 0 then
+  redis.call('HINCRBY', KEYS[1], 'like', -1)
+  return 1
+end
+return 0
+`)
+
 const (
 	articleCacheTTL      = 10 * time.Minute
 	articleCacheJitter   = 5 * time.Minute
@@ -87,6 +103,61 @@ func (r *RedisArticleRepository) DecrStats(aid uint64, field string) error {
 
 	// HIncrBy 传负数即为减少
 	return r.client.HIncrBy(ctx, key, field, -1).Err()
+}
+
+// ArticleUserLikedRedisKey 用户「已点赞」标记的 Redis 键（取消点赞时无条件 DEL）。
+func ArticleUserLikedRedisKey(userID, articleID uint64) string {
+	return fmt.Sprintf("article:user_liked:%d:%d", userID, articleID)
+}
+
+// SetUserArticleLikedMark 恢复点赞标记（如 MQ 发送失败回滚、取消点赞失败回滚）。
+func (r *RedisArticleRepository) SetUserArticleLikedMark(userID, articleID uint64) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	if userID == 0 || articleID == 0 {
+		return nil
+	}
+	ctx := context.Background()
+	return r.client.Set(ctx, ArticleUserLikedRedisKey(userID, articleID), "1", 90*24*time.Hour).Err()
+}
+
+// TryAcquireArticleLikeMark 点赞幂等：SETNX 占位，用于在请求路径用 Redis 挡重复刷赞。
+func (r *RedisArticleRepository) TryAcquireArticleLikeMark(userID, articleID uint64) (acquired bool, err error) {
+	if r == nil || r.client == nil {
+		return false, fmt.Errorf("redis article repo nil")
+	}
+	if userID == 0 || articleID == 0 {
+		return false, fmt.Errorf("invalid user_id/article_id")
+	}
+	ctx := context.Background()
+	return r.client.SetNX(ctx, ArticleUserLikedRedisKey(userID, articleID), "1", 90*24*time.Hour).Result()
+}
+
+// ApplyArticleUnlikeImmediate 取消点赞的 Redis 侧：无条件删除用户点赞标记；点赞数有下界。
+// 返回 likeCountDecremented 表示展示用 like 计数是否被减 1（用于决定是否投递 MQ，避免消费者重复减 MySQL）。
+func (r *RedisArticleRepository) ApplyArticleUnlikeImmediate(userID, articleID uint64) (likeCountDecremented bool, err error) {
+	if r == nil || r.client == nil {
+		return false, fmt.Errorf("redis article repo nil")
+	}
+	if userID == 0 || articleID == 0 {
+		return false, fmt.Errorf("invalid user_id/article_id")
+	}
+	ctx := context.Background()
+	statsKey := fmt.Sprintf("article:stats:%d", articleID)
+	markerKey := ArticleUserLikedRedisKey(userID, articleID)
+	raw, err := articleUnlikeImmediateScript.Run(ctx, r.client, []string{statsKey, markerKey}).Result()
+	if err != nil {
+		return false, err
+	}
+	switch v := raw.(type) {
+	case int64:
+		return v == 1, nil
+	case int:
+		return v == 1, nil
+	default:
+		return false, nil
+	}
 }
 
 // weeklyLeaderboardDaySuffixes 返回最近 n 个本地日历日的 YYYYMMDD（含今天，向前共 n 天）。

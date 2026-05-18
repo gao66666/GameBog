@@ -19,15 +19,17 @@ type FollowService struct {
 	redisRepo  *database.RedisFollowRepository
 	topicRepo  *database.TopicRepository
 	userSvc    *UserService
+	notifySink mq.NotifySink
 }
 
-func NewFollowService(fr *database.FollowRepository, ur *database.UserRepository, rs *database.RedisFollowRepository, tr *database.TopicRepository, userSvc *UserService) *FollowService {
+func NewFollowService(fr *database.FollowRepository, ur *database.UserRepository, rs *database.RedisFollowRepository, tr *database.TopicRepository, userSvc *UserService, notifySink mq.NotifySink) *FollowService {
 	return &FollowService{
 		followRepo: fr,
 		userRepo:   ur,
 		redisRepo:  rs,
 		topicRepo:  tr,
 		userSvc:    userSvc,
+		notifySink: notifySink,
 	}
 }
 
@@ -62,8 +64,11 @@ func (s *FollowService) CreateFollow(param *models.ParamFollow) error {
 
 	go func() {
 		content := "你有一个新粉丝！"
-		err := mq.PublishNotification(param.FollowingID, param.FollowerID, senderName, content, "follow")
-		if err != nil {
+		if s.notifySink != nil {
+			s.notifySink.NotifyPushOrStore(param.FollowingID, param.FollowerID, senderName, content, "follow")
+			return
+		}
+		if err := mq.PublishNotification(param.FollowingID, param.FollowerID, senderName, content, "follow"); err != nil {
 			zap.L().Error("发送关注异步通知失败",
 				zap.Uint64("target_id", param.FollowingID),
 				zap.Error(err))

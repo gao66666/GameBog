@@ -1,3 +1,16 @@
+// Package router 挂载 HTTP 路由与 App 组装。
+//
+// 与简历「Go 后端 — 五条链路」对应的代码入口（便于口述对齐实现）：
+//
+//  1 异步统计批量落库：阅读限频与 Redis 计数/榜单见 database/article_redis.go、service/article_service.go；
+//    NSQ article_stats 与缓冲落库见 mq/article_consumer.go（StatsWorker / CommentStatsWorker）、mq/nsq_init.go。
+//  2 积分入账：Redis 日上限 + MySQL 同事务钱包与流水见 service/points_service.go（EnqueueEarn / EarnPointsWithTxnID）；
+//    Kafka topic points.earn、消费重试与死信 points.earn.dlq 见 mq/kafka_init.go，消费端 handler/points_handler.go；未启用 Kafka 时同入口降级同步。
+//  3 积分钱包：HTTP 见 handler/points_handler.go；商城式同步扣款若未合入请勿在简历写已实现。
+//  4 工程横切：JWT middleware/auth.go、限流 middleware/rate_limit.go、布隆与读穿透 cache/article_guard.go、
+//    雪花 tool/snowflake_module.go、Compose 见仓库 docker-compose*。
+//  5 实时通知：WebSocket 先推、离线异步落库见 handler/notification_handler.go（mq.NotifySink）；
+//    Kafka notification.store 批量落库见 handler/notification_store_handler.go；notification.push 仅兼容旧/外部生产者。
 package router
 
 import (
@@ -33,22 +46,24 @@ type App struct {
 	AgentHandler             *handler.AgentHandler
 }
 
-func (a *App) StartWorkers() {
+// StartPeriodicJobs 启动与 Kafka 无关的后台周期任务（例如通知批量落库 ticker、积分对账）。
+func (a *App) StartPeriodicJobs() {
 	if a.NotificationStoreHandler != nil {
 		a.NotificationStoreHandler.StartFlushTicks()
 	}
-
-	var pointsProc mq.PointsSettleProcessor
 	if a.PointsSvc != nil {
-		pointsProc = a.PointsSvc
-		a.PointsSvc.StartOutboxScanner()
+		a.PointsSvc.StartReconcileTicker()
 	}
+	zap.L().Info("后台周期任务已启动（通知落库 flush、积分对账）")
+}
 
-	if err := mq.StartKafkaConsumers(a.NotificationHandler, a.NotificationStoreHandler, a.SearchHandler, pointsProc); err != nil {
+// StartWorkers 仅注册 Kafka 消费者（依赖 mq.InitKafka 已成功）。
+func (a *App) StartWorkers() {
+	if err := mq.StartKafkaConsumers(a.NotificationHandler, a.NotificationStoreHandler, a.SearchHandler, a.PointsHandler); err != nil {
 		zap.L().Warn("Kafka workers not started", zap.Error(err))
 		return
 	}
-	zap.L().Info("Kafka Worker 启动成功，正在监听【通知】【通知落库】【搜索同步】【积分结算】Topic...")
+	zap.L().Info("Kafka Worker 启动成功，正在监听【通知】【通知落库】【搜索同步】【积分入账 points.earn / DLQ points.earn.dlq】Topic...")
 }
 
 // SetupApp 负责依赖注入的组装过程
@@ -105,18 +120,18 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 
 	// 2. Service 层
 	userSvc := service.NewUserService(userRepo, userRedis, followRepo)
-	followSvc := service.NewFollowService(followRepo, userRepo, followRedis, topicRepo, userSvc)
 	articleSvc := service.NewArticleService(articleRepo, userRepo, commentRepo, followRepo, articleRedis, topicRepo, gameRepo, pointsSvc, userSvc)
 	dmSvc := service.NewDMService(dmRepo, userRepo, dmRedis)
 	topicSvc := service.NewTopicService(topicRepo, articleRepo)
 	gameSvc := service.NewGameService(gameRepo, gameRedis, topicRepo)
 
-	// 3. Handler 层
+	// 3. Handler 层（通知 WebSocket 需先于依赖 NotifySink 的 Service 创建）
 	notificationHandler := handler.NewNotificationHandler(notificationRepo, notificationRedis)
 	notificationStoreHandler := handler.NewNotificationStoreHandler(notificationRepo)
 	dmHandler := handler.NewDMHandler(dmSvc, notificationHandler)
 
-	commentSvc := service.NewCommentService(commentRepo, articleRepo, userRepo, commentRedis, notificationRepo, notificationRedis, notificationHandler, pointsSvc)
+	followSvc := service.NewFollowService(followRepo, userRepo, followRedis, topicRepo, userSvc, notificationHandler)
+	commentSvc := service.NewCommentService(commentRepo, articleRepo, userRepo, commentRedis, notificationHandler, pointsSvc)
 	topicHandler := handler.NewTopicHandler(topicSvc, followSvc)
 
 	// Agent：短期对话在博客 Redis（与 Agent 侧 Redis 解耦）；WebSocket 仍直连 Agent

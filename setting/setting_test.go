@@ -9,8 +9,19 @@ func TestSetDefaults(t *testing.T) {
 	if Conf.KafkaConfig == nil || len(Conf.KafkaConfig.Brokers) == 0 || Conf.KafkaConfig.GroupID == "" {
 		t.Fatalf("kafka defaults not applied")
 	}
+	if Conf.KafkaConfig.PointsEarnMaxRetries <= 0 {
+		t.Fatalf("kafka points_earn_max_retries default not applied: %d", Conf.KafkaConfig.PointsEarnMaxRetries)
+	}
 	if Conf.NSQConfig == nil || Conf.NSQConfig.Addr == "" {
 		t.Fatalf("nsq defaults not applied")
+	}
+	if Conf.NSQConfig.StatsFlushSeconds != 60 || Conf.NSQConfig.StatsFlushMaxKeys != 2000 {
+		t.Fatalf("nsq stats flush defaults not applied: seconds=%d max_keys=%d",
+			Conf.NSQConfig.StatsFlushSeconds, Conf.NSQConfig.StatsFlushMaxKeys)
+	}
+	if Conf.NSQConfig.CommentFlushSeconds != Conf.NSQConfig.StatsFlushSeconds ||
+		Conf.NSQConfig.CommentFlushMaxKeys != Conf.NSQConfig.StatsFlushMaxKeys {
+		t.Fatalf("nsq comment flush defaults not aligned with stats")
 	}
 	if Conf.AuthConfig == nil || Conf.AuthConfig.JWTSecret == "" {
 		t.Fatalf("auth defaults not applied")

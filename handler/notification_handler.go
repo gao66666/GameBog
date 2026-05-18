@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -13,11 +12,18 @@ import (
 
 	"github.com/gao66666/GoBlog/database"
 	"github.com/gao66666/GoBlog/jwt_module"
+	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/mq"
 	"github.com/gao66666/GoBlog/tool"
 	"github.com/gin-gonic/gin"
 	"github.com/olahol/melody"
 	"go.uber.org/zap"
+)
+
+// disconnectReasonKey / disconnectReasonIdleValue：服务端 idle 踢线时写入 Session，HandleDisconnect 据此上报 timeout。
+const (
+	disconnectReasonKey       = "disconnect_reason"
+	disconnectReasonIdleValue = "idle_timeout"
 )
 
 type NotificationHandler struct {
@@ -31,8 +37,7 @@ type NotificationHandler struct {
 	sessionIdleTimeout time.Duration
 }
 
-// PushNotification 用于“无 Kafka 时”的降级直推：只要用户在线（有活跃 WS 连接）就直接写入。
-// 返回 true 表示已成功推送。
+// PushNotification 在本机有该用户的活跃 WebSocket 时直接下行；返回 true 表示已成功推送。
 func (nh *NotificationHandler) PushNotification(userID uint64, payload []byte) bool {
 	if nh == nil || userID == 0 || len(payload) == 0 {
 		return false
@@ -50,7 +55,45 @@ func (nh *NotificationHandler) PushNotification(userID uint64, payload []byte) b
 		nh.Conns.Delete(userID)
 		return false
 	}
+	nh.touchWSIdleTimer(userID)
 	return true
+}
+
+// NotifyPushOrStore 实现 mq.NotifySink：先尝试本机 WebSocket；不在线则异步未读 + 落库队列（Kafka 不可用时同步写库）。
+func (nh *NotificationHandler) NotifyPushOrStore(userID, senderID uint64, senderName, content, msgType string) {
+	if nh == nil || userID == 0 {
+		return
+	}
+	p := mq.NotificationPayload{
+		EventID:    tool.GenerateID(),
+		UserID:     userID,
+		SenderID:   senderID,
+		SenderName: senderName,
+		Content:    content,
+		Type:       msgType,
+		CreatedAt:  time.Now().Unix(),
+	}
+	nh.deliverNotificationPayload(p)
+}
+
+func (nh *NotificationHandler) deliverNotificationPayload(p mq.NotificationPayload) {
+	if nh == nil || p.UserID == 0 {
+		return
+	}
+	msg, err := json.Marshal(p)
+	if err != nil {
+		zap.L().Warn("通知序列化失败", zap.Error(err))
+		return
+	}
+	if nh.PushNotification(p.UserID, msg) {
+		zap.L().Info("实时推送成功", zap.Uint64("to_uid", p.UserID), zap.String("type", p.Type))
+		// 在线送达后仍异步走 Kafka → 落库，记录为已读（审计/多端一致）。
+		go nh.persistOnlineDeliveredArchive(p)
+		return
+	}
+	go func() {
+		nh.persistOfflineNotification(p)
+	}()
 }
 
 func NewNotificationHandler(notificationRepo *database.NotificationRepository, redisNotification *database.RedisNotificationRepository) *NotificationHandler {
@@ -70,7 +113,7 @@ func NewNotificationHandler(notificationRepo *database.NotificationRepository, r
 		if uid, ok := s.Get("userID"); ok {
 			// 签到：UID -> Session
 			userID := uid.(uint64)
-			nh.touchMemoryIdleTimer(userID)
+			nh.touchWSIdleTimer(userID)
 			nh.Conns.Store(userID, s)
 			// 只在打开 /me 时才同步离线通知（避免在其它页面登录就把通知拉走/标已读）
 			if v, ok := s.Get("syncUnread"); ok {
@@ -86,7 +129,13 @@ func NewNotificationHandler(notificationRepo *database.NotificationRepository, r
 			userID := uid.(uint64)
 			nh.clearMemoryIdleTimer(userID)
 			nh.Conns.Delete(userID)
-			go nh.notifyMemorySessionEnd(userID, "ws_close")
+			reason := "ws_close"
+			if v, ok := s.Get(disconnectReasonKey); ok {
+				if rs, ok := v.(string); ok && rs == disconnectReasonIdleValue {
+					reason = "timeout"
+				}
+			}
+			go nh.notifyMemorySessionEnd(userID, reason)
 		}
 	})
 
@@ -130,10 +179,11 @@ func (nh *NotificationHandler) RouteAgentMessages(agent *AgentHandler) {
 	if nh == nil || nh.Meld == nil || agent == nil {
 		return
 	}
+	agent.wsIdle = nh
 	nh.Meld.HandleMessage(func(s *melody.Session, msg []byte) {
 		if uid, ok := s.Get("userID"); ok {
 			if userID, ok := uid.(uint64); ok {
-				nh.touchMemoryIdleTimer(userID)
+				nh.touchWSIdleTimer(userID)
 			}
 		}
 		agent.HandleMessage(s, msg)
@@ -180,6 +230,7 @@ func (nh *NotificationHandler) syncUnreadNotifications(userID uint64, session *m
 			zap.L().Warn("同步离线通知失败", zap.Uint64("uid", userID), zap.Error(err))
 			return
 		}
+		nh.touchWSIdleTimer(userID)
 	}
 
 	if err := nh.redisNotification.ClearHasUnread(userID); err != nil {
@@ -199,44 +250,63 @@ func (nh *NotificationHandler) ProcessNotificationMessage(ctx context.Context, p
 		zap.L().Error("解析通知 Payload 失败", zap.Error(err))
 		return nil
 	}
-
-	// 2. 检查用户是否在线
-	val, ok := nh.Conns.Load(p.UserID)
-	if !ok {
-		nh.persistOfflineNotification(p)
-		zap.L().Debug("用户不在线，跳过推送", zap.Uint64("uid", p.UserID))
-		return nil
-	}
-
-	// 3. 执行推送
-	session, ok := val.(*melody.Session)
-	if !ok || session.IsClosed() {
-		// 如果 Session 已经失效但还没来得及从 Map 里删掉
-		nh.Conns.Delete(p.UserID)
-		return nil
-	}
-
-	msg, _ := json.Marshal(p)
-	err := session.Write(msg)
-	if err != nil {
-		nh.persistOfflineNotification(p)
-		return fmt.Errorf("WebSocket写入失败: %w", err)
-	}
-
-	zap.L().Info("实时推送成功", zap.Uint64("to_uid", p.UserID), zap.String("type", p.Type))
+	// 与 NotifyPushOrStore 同源：兼容仍写入 notification.push 的旧生产者或外部系统。
+	nh.deliverNotificationPayload(p)
 	return nil
+}
+
+func (nh *NotificationHandler) persistOnlineDeliveredArchive(p mq.NotificationPayload) {
+	arch := p
+	arch.IsRead = true
+	if err := mq.PublishNotificationStore(arch); err != nil {
+		zap.L().Error("在线通知归档入队失败", zap.Uint64("to_uid", p.UserID), zap.Error(err))
+		nh.persistNotificationSyncFallback(arch)
+	}
 }
 
 func (nh *NotificationHandler) persistOfflineNotification(p mq.NotificationPayload) {
 	if nh.redisNotification != nil {
 		_ = nh.redisNotification.SetHasUnread(p.UserID)
 	}
-	if err := mq.PublishNotificationStore(p); err != nil {
+	offline := p
+	offline.IsRead = false
+	if err := mq.PublishNotificationStore(offline); err != nil {
 		zap.L().Error("通知离线落库消息发送失败", zap.Error(err))
+		nh.persistNotificationSyncFallback(offline)
 	}
 }
 
-func (nh *NotificationHandler) touchMemoryIdleTimer(userID uint64) {
+func (nh *NotificationHandler) persistNotificationSyncFallback(p mq.NotificationPayload) {
+	if nh.notificationRepo == nil {
+		return
+	}
+	now := time.Now()
+	created := time.Unix(p.CreatedAt, 0)
+	if p.CreatedAt == 0 {
+		created = now
+	}
+	n := &models.Notification{
+		EventID:    p.EventID,
+		UserID:     p.UserID,
+		SenderID:   p.SenderID,
+		SenderName: p.SenderName,
+		Content:    p.Content,
+		Type:       p.Type,
+		IsRead:     p.IsRead,
+		CreatedAt:  created,
+		UpdatedAt:  now,
+	}
+	if p.IsRead {
+		t := now
+		n.ReadAt = &t
+	}
+	if err := nh.notificationRepo.BatchCreateNotifications([]*models.Notification{n}); err != nil {
+		zap.L().Warn("通知同步落库失败", zap.Uint64("to_uid", p.UserID), zap.Error(err))
+	}
+}
+
+// touchWSIdleTimer 在「建连、客户端上行、服务端下行写 WS 成功」后调用，重置空闲计时；到期主动 Close，触发离线链路与前端重连。
+func (nh *NotificationHandler) touchWSIdleTimer(userID uint64) {
 	if nh == nil || userID == 0 || nh.sessionIdleTimeout <= 0 {
 		return
 	}
@@ -245,10 +315,36 @@ func (nh *NotificationHandler) touchMemoryIdleTimer(userID uint64) {
 			timer.Stop()
 		}
 	}
-	timer := time.AfterFunc(nh.sessionIdleTimeout, func() {
-		nh.notifyMemorySessionEnd(userID, "timeout")
+	var t *time.Timer
+	t = time.AfterFunc(nh.sessionIdleTimeout, func() {
+		if cur, ok := nh.idleTimers.Load(userID); ok {
+			if curT, ok := cur.(*time.Timer); !ok || curT != t {
+				return
+			}
+			nh.idleTimers.CompareAndDelete(userID, t)
+		}
+		nh.forceIdleDisconnect(userID)
 	})
-	nh.idleTimers.Store(userID, timer)
+	nh.idleTimers.Store(userID, t)
+}
+
+func (nh *NotificationHandler) forceIdleDisconnect(userID uint64) {
+	if nh == nil || userID == 0 {
+		return
+	}
+	val, ok := nh.Conns.Load(userID)
+	if !ok {
+		return
+	}
+	s, ok := val.(*melody.Session)
+	if !ok || s == nil || s.IsClosed() {
+		nh.Conns.Delete(userID)
+		return
+	}
+	s.Set(disconnectReasonKey, disconnectReasonIdleValue)
+	if err := s.Close(); err != nil {
+		zap.L().Warn("空闲超时关闭 WebSocket 失败", zap.Uint64("uid", userID), zap.Error(err))
+	}
 }
 
 func (nh *NotificationHandler) clearMemoryIdleTimer(userID uint64) {
