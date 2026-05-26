@@ -20,6 +20,7 @@
 - 文章发布/编辑/搜索，点赞与阅读异步统计（NSQ + Redis + MySQL）
 - 评论、私信、话题与游戏库
 - 通知：Kafka 异步 + WebSocket 实时推送，离线补偿
+- 积分系统 & **积分商城**：赚取积分 → 兑换商品（Redis Lua 扣库存 + MySQL 占码）
 - 全文检索（Elasticsearch），热门与排行榜（Redis ZSet）
 - AI 个人助手（`agent/`，对接博客 MCP 与 RAG）
 
