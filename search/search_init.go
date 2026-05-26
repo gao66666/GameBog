@@ -178,13 +178,20 @@ func escapeWildcardQuery(s string) string {
 }
 
 func SearchArticles(ctx context.Context, query string, limit int) ([]map[string]any, error) {
+	return SearchArticlesPaged(ctx, query, 1, limit)
+}
+
+func SearchArticlesPaged(ctx context.Context, query string, page, size int) ([]map[string]any, error) {
 	if !Enabled() {
 		return nil, errors.New("search is not enabled")
 	}
-	if limit <= 0 {
-		limit = 20
+	if page <= 0 {
+		page = 1
 	}
-
+	if size <= 0 {
+		size = 20
+	}
+	from := (page - 1) * size
 	trimmed := strings.TrimSpace(query)
 	should := []any{
 		map[string]any{
@@ -218,7 +225,8 @@ func SearchArticles(ctx context.Context, query string, limit int) ([]map[string]
 
 	// bool：全文 + title.raw/summary.raw 子串（利于中文）；未重建索引的旧文档可能仅有 multi_match 命中。
 	q := map[string]any{
-		"size": limit,
+		"from": from,
+		"size": size,
 		"query": map[string]any{
 			"bool": map[string]any{
 				"should":               should,

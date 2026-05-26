@@ -143,24 +143,7 @@ func (r *RedisGameRepository) DeleteKeysByPattern(pattern string) error {
 	if r == nil || r.client == nil || pattern == "" {
 		return nil
 	}
-	ctx := context.Background()
-	var cursor uint64
-	for {
-		keys, next, err := r.client.Scan(ctx, cursor, pattern, 100).Result()
-		if err != nil {
-			return err
-		}
-		if len(keys) > 0 {
-			if err := r.client.Del(ctx, keys...).Err(); err != nil {
-				return err
-			}
-		}
-		cursor = next
-		if cursor == 0 {
-			break
-		}
-	}
-	return nil
+	return deleteKeysByPattern(r.client, pattern)
 }
 
 // --- UserGamePlay 缓存 ---

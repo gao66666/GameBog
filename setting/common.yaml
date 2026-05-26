@@ -7,12 +7,13 @@ machine_id: 1
 
 auth:
   jwt_expire: 8760
-  jwt_secret: "change-me-in-production"
+  jwt_secret: ""  # 通过环境变量 AUTH_JWT_SECRET 设置
 
 log:
   level: "info"
   common_filename: "./logger/common_log/webServer.log"
   error_filename: "./logger/error_log/webServer.log"
+  agent_turn_filename: "./logger/agent_turn_log/agent_turn.log"
   max_size: 200
   max_age: 30
   max_backups: 7
@@ -20,14 +21,14 @@ mysql:
   host: "localhost"
   port: 3306
   user: "root"
-  password: "123456"
+  password: ""  # 通过环境变量 MYSQL_PASSWORD 设置
   dbname: "goblog"
   max_open_conns: 100
   max_idle_conns: 20
 redis:
   host: "localhost"
   port: 6379
-  password: ""
+  password: ""  # 通过环境变量 REDIS_PASSWORD 设置
   db: 0
   pool_size: 100
 

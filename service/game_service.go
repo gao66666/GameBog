@@ -124,6 +124,10 @@ func (s *GameService) ListGames(page, size int) ([]*models.Game, int64, error) {
 	return list, total, nil
 }
 
+func (s *GameService) SearchGamesByName(q string, limit int) ([]*models.Game, error) {
+	return s.gameRepo.SearchGamesByName(q, limit)
+}
+
 func (s *GameService) CreateReview(review *models.GameReview) error {
 	if review == nil || review.GameID == 0 || review.UserID == 0 {
 		return errGameInvalidParam

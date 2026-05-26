@@ -1,0 +1,422 @@
+[
+  {
+    "article_id": "game:elden-ring",
+    "chunk_index": 0,
+    "content_revision": 1,
+    "point_id": "ccc4ce2e-963d-5067-aab2-0f10a0deb83d",
+    "game_name": "艾尔登法环",
+    "section_path": [
+      "艾尔登法环（Elden Ring）",
+      "简介"
+    ],
+    "section_title": "简介",
+    "part_index": 0,
+    "char_count": 348
+  },
+  {
+    "article_id": "game:elden-ring",
+    "chunk_index": 100,
+    "content_revision": 1,
+    "point_id": "a5e52cd0-ed40-5f60-906d-982dcf0b0dcb",
+    "game_name": "艾尔登法环",
+    "section_path": [
+      "艾尔登法环（Elden Ring）",
+      "游戏背景"
+    ],
+    "section_title": "游戏背景",
+    "part_index": 0,
+    "char_count": 269
+  },
+  {
+    "article_id": "game:elden-ring",
+    "chunk_index": 200,
+    "content_revision": 1,
+    "point_id": "1f688258-b799-5a04-85e2-193896337933",
+    "game_name": "艾尔登法环",
+    "section_path": [
+      "艾尔登法环（Elden Ring）",
+      "配置需求"
+    ],
+    "section_title": "配置需求",
+    "part_index": 0,
+    "char_count": 436
+  },
+  {
+    "article_id": "game:elden-ring",
+    "chunk_index": 300,
+    "content_revision": 1,
+    "point_id": "10da6a15-4346-5d8c-aef6-275f239e1d46",
+    "game_name": "艾尔登法环",
+    "section_path": [
+      "艾尔登法环（Elden Ring）",
+      "玩法"
+    ],
+    "section_title": "玩法",
+    "part_index": 0,
+    "char_count": 347
+  },
+  {
+    "article_id": "game:elden-ring",
+    "chunk_index": 400,
+    "content_revision": 1,
+    "point_id": "0acbf206-ea72-55de-adea-66abef97dff4",
+    "game_name": "艾尔登法环",
+    "section_path": [
+      "艾尔登法环（Elden Ring）",
+      "注意事项"
+    ],
+    "section_title": "注意事项",
+    "part_index": 0,
+    "char_count": 279
+  },
+  {
+    "article_id": "game:bg3",
+    "chunk_index": 0,
+    "content_revision": 1,
+    "point_id": "4cb8299f-d8db-58f2-9f21-ec7547bd8644",
+    "game_name": "博德之门3",
+    "section_path": [
+      "博德之门 3（Baldur's Gate 3）",
+      "简介"
+    ],
+    "section_title": "简介",
+    "part_index": 0,
+    "char_count": 312
+  },
+  {
+    "article_id": "game:bg3",
+    "chunk_index": 100,
+    "content_revision": 1,
+    "point_id": "329058ff-58c1-55f2-94fb-4f2cb4b762e3",
+    "game_name": "博德之门3",
+    "section_path": [
+      "博德之门 3（Baldur's Gate 3）",
+      "游戏背景"
+    ],
+    "section_title": "游戏背景",
+    "part_index": 0,
+    "char_count": 305
+  },
+  {
+    "article_id": "game:bg3",
+    "chunk_index": 200,
+    "content_revision": 1,
+    "point_id": "de0fdc51-fbb2-5b3f-a20b-e5f11ee186f9",
+    "game_name": "博德之门3",
+    "section_path": [
+      "博德之门 3（Baldur's Gate 3）",
+      "配置需求"
+    ],
+    "section_title": "配置需求",
+    "part_index": 0,
+    "char_count": 390
+  },
+  {
+    "article_id": "game:bg3",
+    "chunk_index": 300,
+    "content_revision": 1,
+    "point_id": "67a18bfc-ba2b-598f-a6b0-5761f1d75f21",
+    "game_name": "博德之门3",
+    "section_path": [
+      "博德之门 3（Baldur's Gate 3）",
+      "玩法"
+    ],
+    "section_title": "玩法",
+    "part_index": 0,
+    "char_count": 339
+  },
+  {
+    "article_id": "game:bg3",
+    "chunk_index": 400,
+    "content_revision": 1,
+    "point_id": "85427cb6-c44f-5e5c-a6d5-ed7bc81fba09",
+    "game_name": "博德之门3",
+    "section_path": [
+      "博德之门 3（Baldur's Gate 3）",
+      "注意事项"
+    ],
+    "section_title": "注意事项",
+    "part_index": 0,
+    "char_count": 283
+  },
+  {
+    "article_id": "game:sekiro",
+    "chunk_index": 0,
+    "content_revision": 1,
+    "point_id": "486f404c-e2ae-527c-a647-30ffce62fd60",
+    "game_name": "只狼：影逝二度",
+    "section_path": [
+      "只狼：影逝二度（Sekiro: Shadows Die Twice）",
+      "简介"
+    ],
+    "section_title": "简介",
+    "part_index": 0,
+    "char_count": 310
+  },
+  {
+    "article_id": "game:sekiro",
+    "chunk_index": 100,
+    "content_revision": 1,
+    "point_id": "d7bd1fbb-be85-5063-836e-026858f05487",
+    "game_name": "只狼：影逝二度",
+    "section_path": [
+      "只狼：影逝二度（Sekiro: Shadows Die Twice）",
+      "游戏背景"
+    ],
+    "section_title": "游戏背景",
+    "part_index": 0,
+    "char_count": 270
+  },
+  {
+    "article_id": "game:sekiro",
+    "chunk_index": 200,
+    "content_revision": 1,
+    "point_id": "a6b1f1e6-d078-56aa-8c46-c7987bfa08d6",
+    "game_name": "只狼：影逝二度",
+    "section_path": [
+      "只狼：影逝二度（Sekiro: Shadows Die Twice）",
+      "配置需求"
+    ],
+    "section_title": "配置需求",
+    "part_index": 0,
+    "char_count": 414
+  },
+  {
+    "article_id": "game:sekiro",
+    "chunk_index": 300,
+    "content_revision": 1,
+    "point_id": "6408525d-7a3d-5d63-b66e-61f0c55c7ec1",
+    "game_name": "只狼：影逝二度",
+    "section_path": [
+      "只狼：影逝二度（Sekiro: Shadows Die Twice）",
+      "玩法"
+    ],
+    "section_title": "玩法",
+    "part_index": 0,
+    "char_count": 349
+  },
+  {
+    "article_id": "game:sekiro",
+    "chunk_index": 400,
+    "content_revision": 1,
+    "point_id": "581ad1da-71e2-5b8c-9de9-ade1793b8d08",
+    "game_name": "只狼：影逝二度",
+    "section_path": [
+      "只狼：影逝二度（Sekiro: Shadows Die Twice）",
+      "注意事项"
+    ],
+    "section_title": "注意事项",
+    "part_index": 0,
+    "char_count": 264
+  },
+  {
+    "article_id": "game:genshin",
+    "chunk_index": 0,
+    "content_revision": 1,
+    "point_id": "3e8ffd1b-bc49-5b0c-92c9-41e7fe143895",
+    "game_name": "原神",
+    "section_path": [
+      "原神（Genshin Impact）",
+      "简介"
+    ],
+    "section_title": "简介",
+    "part_index": 0,
+    "char_count": 321
+  },
+  {
+    "article_id": "game:genshin",
+    "chunk_index": 100,
+    "content_revision": 1,
+    "point_id": "fde54c6b-197c-5447-ba41-07dd7148543b",
+    "game_name": "原神",
+    "section_path": [
+      "原神（Genshin Impact）",
+      "游戏背景"
+    ],
+    "section_title": "游戏背景",
+    "part_index": 0,
+    "char_count": 244
+  },
+  {
+    "article_id": "game:genshin",
+    "chunk_index": 200,
+    "content_revision": 1,
+    "point_id": "10d76f64-44c0-51f3-9237-9f255cac3760",
+    "game_name": "原神",
+    "section_path": [
+      "原神（Genshin Impact）",
+      "配置需求"
+    ],
+    "section_title": "配置需求",
+    "part_index": 0,
+    "char_count": 335
+  },
+  {
+    "article_id": "game:genshin",
+    "chunk_index": 300,
+    "content_revision": 1,
+    "point_id": "611e1919-91d1-5a67-9973-da58b01a7630",
+    "game_name": "原神",
+    "section_path": [
+      "原神（Genshin Impact）",
+      "玩法"
+    ],
+    "section_title": "玩法",
+    "part_index": 0,
+    "char_count": 293
+  },
+  {
+    "article_id": "game:genshin",
+    "chunk_index": 400,
+    "content_revision": 1,
+    "point_id": "81a09aab-2388-5392-9966-8977d490c6ed",
+    "game_name": "原神",
+    "section_path": [
+      "原神（Genshin Impact）",
+      "注意事项"
+    ],
+    "section_title": "注意事项",
+    "part_index": 0,
+    "char_count": 281
+  },
+  {
+    "article_id": "game:hades",
+    "chunk_index": 0,
+    "content_revision": 1,
+    "point_id": "3319ef2f-a3c7-5d89-8804-a3e1a141ae3e",
+    "game_name": "哈迪斯",
+    "section_path": [
+      "哈迪斯（Hades）",
+      "简介"
+    ],
+    "section_title": "简介",
+    "part_index": 0,
+    "char_count": 299
+  },
+  {
+    "article_id": "game:hades",
+    "chunk_index": 100,
+    "content_revision": 1,
+    "point_id": "80e736aa-9407-5dbb-8233-cf16bc8fce75",
+    "game_name": "哈迪斯",
+    "section_path": [
+      "哈迪斯（Hades）",
+      "游戏背景"
+    ],
+    "section_title": "游戏背景",
+    "part_index": 0,
+    "char_count": 260
+  },
+  {
+    "article_id": "game:hades",
+    "chunk_index": 200,
+    "content_revision": 1,
+    "point_id": "53221e96-264f-51e1-b821-fa68e4421ec2",
+    "game_name": "哈迪斯",
+    "section_path": [
+      "哈迪斯（Hades）",
+      "配置需求"
+    ],
+    "section_title": "配置需求",
+    "part_index": 0,
+    "char_count": 312
+  },
+  {
+    "article_id": "game:hades",
+    "chunk_index": 300,
+    "content_revision": 1,
+    "point_id": "32292df2-6a30-516d-b446-0875b258bfa8",
+    "game_name": "哈迪斯",
+    "section_path": [
+      "哈迪斯（Hades）",
+      "玩法"
+    ],
+    "section_title": "玩法",
+    "part_index": 0,
+    "char_count": 311
+  },
+  {
+    "article_id": "game:hades",
+    "chunk_index": 400,
+    "content_revision": 1,
+    "point_id": "d29ed2ea-e6af-5ea5-92fa-1105bea95e97",
+    "game_name": "哈迪斯",
+    "section_path": [
+      "哈迪斯（Hades）",
+      "注意事项"
+    ],
+    "section_title": "注意事项",
+    "part_index": 0,
+    "char_count": 233
+  },
+  {
+    "article_id": "game:apex",
+    "chunk_index": 0,
+    "content_revision": 1,
+    "point_id": "0e9266bd-2688-50d3-ab61-221bdc18180f",
+    "game_name": "APEX 英雄",
+    "section_path": [
+      "APEX 英雄（Apex Legends）",
+      "简介"
+    ],
+    "section_title": "简介",
+    "part_index": 0,
+    "char_count": 371
+  },
+  {
+    "article_id": "game:apex",
+    "chunk_index": 100,
+    "content_revision": 1,
+    "point_id": "148f7749-6cf0-577c-b69e-f68e22063ee8",
+    "game_name": "APEX 英雄",
+    "section_path": [
+      "APEX 英雄（Apex Legends）",
+      "游戏背景"
+    ],
+    "section_title": "游戏背景",
+    "part_index": 0,
+    "char_count": 279
+  },
+  {
+    "article_id": "game:apex",
+    "chunk_index": 200,
+    "content_revision": 1,
+    "point_id": "10eb1e98-d28c-51ad-8987-d0707d9594f6",
+    "game_name": "APEX 英雄",
+    "section_path": [
+      "APEX 英雄（Apex Legends）",
+      "配置需求"
+    ],
+    "section_title": "配置需求",
+    "part_index": 0,
+    "char_count": 374
+  },
+  {
+    "article_id": "game:apex",
+    "chunk_index": 300,
+    "content_revision": 1,
+    "point_id": "5798b684-c777-564e-a497-bc73142655ea",
+    "game_name": "APEX 英雄",
+    "section_path": [
+      "APEX 英雄（Apex Legends）",
+      "玩法"
+    ],
+    "section_title": "玩法",
+    "part_index": 0,
+    "char_count": 297
+  },
+  {
+    "article_id": "game:apex",
+    "chunk_index": 400,
+    "content_revision": 1,
+    "point_id": "d51483b3-05ff-5c1e-a4df-697f8431fb7a",
+    "game_name": "APEX 英雄",
+    "section_path": [
+      "APEX 英雄（Apex Legends）",
+      "注意事项"
+    ],
+    "section_title": "注意事项",
+    "part_index": 0,
+    "char_count": 288
+  }
+]

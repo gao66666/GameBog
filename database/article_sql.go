@@ -453,16 +453,25 @@ func (r *ArticleRepository) ReplaceArticleTopics(articleID uint64, topicIDs []ui
 // SearchArticlesFallback ES 不可用时的降级查询：简单 LIKE 匹配。
 // 注意：这是兜底能力，不保证性能；线上应优先使用搜索引擎或增加专用索引。
 func (r *ArticleRepository) SearchArticlesFallback(keyword string, limit int) ([]*models.Article, error) {
-	if limit <= 0 {
-		limit = 20
+	return r.SearchArticlesFallbackPaged(keyword, 1, limit)
+}
+
+func (r *ArticleRepository) SearchArticlesFallbackPaged(keyword string, page, size int) ([]*models.Article, error) {
+	if page <= 0 {
+		page = 1
 	}
+	if size <= 0 {
+		size = 20
+	}
+	offset := (page - 1) * size
 	var articles []*models.Article
 	like := "%" + keyword + "%"
 	err := r.db.Model(&models.Article{}).
 		Select("id", "author_id", "title", "summary", "created_at").
 		Where("title LIKE ? OR summary LIKE ? OR content LIKE ?", like, like, like).
 		Order("created_at DESC").
-		Limit(limit).
+		Offset(offset).
+		Limit(size).
 		Find(&articles).Error
 	return articles, err
 }

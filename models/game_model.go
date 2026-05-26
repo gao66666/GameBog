@@ -129,3 +129,5 @@ type PointsTransaction struct {
 	Description  string    `gorm:"column:description;size:255" json:"description"`
 	CreatedAt    time.Time `gorm:"column:created_at" json:"createdAt"`
 }
+
+func (PointsTransaction) TableName() string { return "points_transactions" }

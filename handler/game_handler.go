@@ -178,6 +178,21 @@ func (h *GameHandler) ListGames(c *gin.Context) {
 	tool.ResponseSuccess(c, gin.H{"list": list, "total": total}, "查询成功")
 }
 
+func (h *GameHandler) SearchGames(c *gin.Context) {
+	q := strings.TrimSpace(c.Query("q"))
+	if q == "" {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "5"))
+	list, err := h.se.SearchGamesByName(q, limit)
+	if err != nil {
+		tool.ResponseError(c, err)
+		return
+	}
+	tool.ResponseSuccess(c, gin.H{"games": list, "total": len(list)}, "查询成功")
+}
+
 func (h *GameHandler) CreateReview(c *gin.Context) {
 	gameID, ok := parseUint64Param(c.Param("id"))
 	if !ok {

@@ -7,6 +7,12 @@ const router = createRouter({
     { path: '/', name: 'home', component: () => import('@/views/HomeView.vue') },
     { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue'), meta: { guest: true } },
     { path: '/me', name: 'me', component: () => import('@/views/MeView.vue'), meta: { requiresAuth: true } },
+    {
+      path: '/points-mall',
+      name: 'points-mall',
+      component: () => import('@/views/PointsMallView.vue'),
+      meta: { requiresAuth: true },
+    },
     { path: '/editor', name: 'editor', component: () => import('@/views/EditorView.vue'), meta: { requiresAuth: true } },
     { path: '/agent', name: 'agent', component: () => import('@/views/AgentView.vue') },
     { path: '/dm', name: 'dm', component: () => import('@/views/DMView.vue'), meta: { requiresAuth: true } },

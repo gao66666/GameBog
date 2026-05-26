@@ -374,24 +374,33 @@
     function handleSSEEvent(event) {
         switch (event.type) {
             case 'session':
-                break;
             case 'rewrite':
-                break;
             case 'route':
                 break;
+            case 'thinking':
+                if (event.content) statusText.textContent = event.content;
+                showThinking();
+                break;
+            case 'phase':
+                if (event.content) statusText.textContent = event.content;
+                showThinking();
+                break;
+            case 'text_chunk':
             case 'token':
                 hideThinking();
                 appendToAssistant(event.content || '');
                 break;
             case 'tool_start':
-                showToolCall(event.tool || 'unknown');
+                hideThinking();
+                showToolCall(event.content || event.tool || 'unknown');
                 break;
-            case 'tool_end':
+            case 'tool_end': {
                 const toolCalls = chatThread.querySelectorAll('.chat-tool-call');
-                if (toolCalls.length > 0) {
-                    toolCalls[toolCalls.length - 1].remove();
+                if (toolCalls.length > 0 && event.content) {
+                    toolCalls[toolCalls.length - 1].textContent = event.content;
                 }
                 break;
+            }
             case 'done':
                 hideThinking();
                 break;

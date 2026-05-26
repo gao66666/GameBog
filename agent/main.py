@@ -1,6 +1,5 @@
 """
-GoBlog Agent HTTP：改写 → 路由 →（编排开启时）分析₁→检索→计划→分析₂→执行。
-编排开启且 resolution=proceed 时，必须完整跑完检索/计划/收口再进执行器；追问/拒绝为有意短路。
+GoBlog Agent HTTP：改写 → 路由 → 工具检索 → analyse↔(plan→execute) → output 成稿。
 启动: uvicorn main:app --host 0.0.0.0 --port 9091
 """
 
@@ -15,28 +14,30 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from agent_core import _route, build_agent
-from agent_metrics import CHAT_REQUESTS
-from memory_turn import persist_chat_turn
-from planning_round import (
-    analysis_pre_resolution,
-    build_round_system_message,
-    early_reply_from_analysis_pre,
-    planning_round_enabled,
-    run_analysis_close,
-    run_analysis_pre,
+from core.agent_core import _route, build_agent, resolve_tools_for_execution, stream_tool_execution
+from infra.agent_metrics import CHAT_REQUESTS
+from memory.memory_turn import persist_chat_turn
+from core.planning_round import (
+    EXECUTE_DISPOSITIONS,
+    TERMINAL_DISPOSITIONS,
+    build_execute_messages,
+    max_orchestration_cycles,
+    normalize_disposition,
+    run_output,
+    run_analyse,
     run_plan,
 )
-from reflection import (
+from core.reflection import (
     commit_long_term_on_session_end,
     retrieve_long_term_for_turn,
-    schedule_async_self_reflection,
+    schedule_post_turn_memory,
 )
-from rag import rewrite_query
-from config import get_prompts, load_config
-from agent_log import get_logger
-from memory_manager import init_memory_services, ingest_document_chunk
-from memory_store import (
+from core.rag import rewrite_query
+from core.token_usage import get_turn_usage_tracker, reset_turn_usage_tracker
+from infra.config import get_prompts, load_config
+from infra.agent_log import get_logger
+from memory.memory_manager import init_memory_services, ingest_document_chunk
+from memory.memory_store import (
     clear_session,
     clear_short_messages,
     get_mid_summaries,
@@ -45,6 +46,8 @@ from memory_store import (
     redis_ping,
     refresh_session,
 )
+from core.stream_emitter import StreamEmitter
+from tools.tool_retrieval import retrieve_tools_for_turn
 
 
 # ============================================================
@@ -81,6 +84,7 @@ class AgentRequest(BaseModel):
 class MemoryCommitRequest(BaseModel):
     user_id: int
     reason: str = "session_end"
+    chat_session_id: str = Field("", description="可选；指定则只 flush 该对话桶，否则 flush 用户全部 short 桶")
 
 
 class ClearShortRequest(BaseModel):
@@ -132,20 +136,28 @@ async def chat(
     """SSE：含分段耗时、request_id；编排见 planning_round。"""
     async def event_stream():
         rid = (x_request_id or "").strip() or (req.request_id or "").strip()
+        reset_turn_usage_tracker()
         wall_start = time.time()
-        use_planning_round = planning_round_enabled()
-        planning_cycle_complete = not use_planning_round
-        res_pre = "proceed"
+        planning_cycle_complete = False
         timings: dict[str, Any] = {}
-        analysis_pre_ms = 0
+        retrieved_tool_names: list[str] = []
+        tool_retrieve_mode = ""
+        code_to_name: dict[str, str] = {}
+        analyse: dict[str, Any] = {}
+        plan: dict[str, Any] = {}
+        all_tool_results: list[dict] = []
+        disposition = "proceed"
+        em: StreamEmitter | None = None
         try:
             cfg = load_config()
             mem_cfg = cfg.get("memory", {})
             short_limit = mem_cfg.get("short_window_messages", 12)
             short_ttl_minutes = mem_cfg.get("short_ttl_minutes", 60)
             mid_limit = mem_cfg.get("mid_max_items", 8)
-            mongo_retrieval_limit = mem_cfg.get("mongo_retrieval_limit", 10)
-            qdrant_retrieval_limit = mem_cfg.get("long_term_retrieval_limit", 6)
+            mongo_retrieval_limit = mem_cfg.get(
+                "mongo_rule_preference_limit", mem_cfg.get("mongo_retrieval_limit", 5)
+            )
+            qdrant_retrieval_limit = mem_cfg.get("long_term_retrieval_limit", 10)
             session_idle = mem_cfg.get("session_idle_timeout_minutes", 30)
 
             extra_log = {"user_id": req.user_id}
@@ -153,36 +165,56 @@ async def chat(
                 extra_log["request_id"] = rid
             _log.info("chat start", extra=extra_log)
 
+            csid = (req.chat_session_id or "").strip() or "default"
+            em = StreamEmitter(rid, chat_session_id=csid, legacy_mirror=False)
+
             session = await refresh_session(req.user_id, session_idle)
-            yield _sse({"type": "session", "session_id": session["session_id"], "request_id": rid})
+            for line in em.emit_session(session["session_id"]):
+                yield line
 
             t0 = time.time()
             rewritten = await rewrite_query(req.message)
             rewrite_ms = int((time.time() - t0) * 1000)
             timings["rewrite_ms"] = rewrite_ms
 
-            yield _sse(
-                {
-                    "type": "rewrite",
-                    "original": req.message,
-                    "rewritten": rewritten,
-                    "rewrite_ms": rewrite_ms,
-                    "request_id": rid,
-                }
-            )
+            for line in em.emit_rewrite(req.message, rewritten, rewrite_ms):
+                yield line
 
             t1 = time.time()
             has_token = bool(req.token)
-            servers = await _route(req.message, has_token)
+            route_result = await _route(req.message, has_token, rewritten=rewritten)
+            servers = route_result.servers
+            tool_hints = route_result.tool_hints
+            memory_hints = route_result.memory_hints
             route_ms = int((time.time() - t1) * 1000)
             timings["route_ms"] = route_ms
 
-            yield _sse({"type": "route", "servers": servers, "route_ms": route_ms, "request_id": rid})
+            for line in em.emit_route(
+                req.message, servers, has_token, route_ms,
+                tool_hints=tool_hints,
+                memory_hints=memory_hints,
+            ):
+                yield line
 
-            agent = build_agent(servers)
+            t_tr = time.time()
+            retrieved_tool_names, tool_retrieve_mode = await retrieve_tools_for_turn(
+                rewritten or req.message,
+                servers,
+                tool_hints=tool_hints,
+            )
+            tool_retrieve_ms = int((time.time() - t_tr) * 1000)
+            timings["tool_retrieve_ms"] = tool_retrieve_ms
+            for line in em.emit_tool_retrieve(
+                rewritten or req.message,
+                servers,
+                retrieved_tool_names,
+                tool_retrieve_mode,
+                tool_retrieve_ms,
+                tool_hints=tool_hints,
+            ):
+                yield line
+
             user_msg = {"role": "user", "content": req.message}
-
-            csid = (req.chat_session_id or "").strip() or "default"
             if req.history_owned_by_gateway:
                 short_messages = []
                 for m in req.conversation_history or []:
@@ -201,203 +233,164 @@ async def chat(
             else:
                 recent_messages = short_messages[-recent_limit:]
 
-            messages: list[dict] = []
-            if mid_summaries:
-                summary_json = json.dumps(mid_summaries, ensure_ascii=False)
-                messages.append({"role": "system", "content": f"中期记忆(JSON 列表): {summary_json}"})
-
             long_term_context: list = []
+            assistant_text = ""
+            output_disposition = disposition
+            force_output_note = ""
 
-            if use_planning_round:
-                analysis_pre, analysis_pre_ms = await run_analysis_pre(
+            long_term_fetched = False
+            executed_once = False
+            prior_analyse: dict[str, Any] = {}
+            max_cycles = max_orchestration_cycles()
+            orch_cycle = 0
+            terminal = False
+
+            while orch_cycle < max_cycles and not terminal:
+                phase = "post" if executed_once else "pre"
+                t_a = time.time()
+                analyse, analyse_ms, code_to_name = await run_analyse(
+                    phase=phase,
                     user_message=req.message,
                     rewritten=rewritten or req.message,
                     servers=servers,
+                    retrieved_tool_names=retrieved_tool_names,
                     recent_messages=recent_messages,
                     mid_summaries=mid_summaries,
+                    tool_results=all_tool_results if phase == "post" else None,
+                    prior_analyse=prior_analyse if phase == "post" else None,
+                    plan=plan if phase == "post" else None,
+                    cycle=orch_cycle + 1,
                 )
-                timings["analysis_pre_ms"] = analysis_pre_ms
-                res_pre = analysis_pre_resolution(analysis_pre)
-                yield _sse(
-                    {
-                        "type": "analysis_pre",
-                        "analysis_pre_ms": analysis_pre_ms,
-                        "intent": (analysis_pre.get("intent") or "")[:500],
-                        "resolution": res_pre,
-                        "candidate_tool_codes": analysis_pre.get("candidate_tool_codes") or [],
-                        "request_id": rid,
-                    }
-                )
+                disposition = normalize_disposition(analyse)
+                key = "analyse_post_ms" if phase == "post" else "analyse_pre_ms"
+                timings[key] = analyse_ms
+                for line in em.emit_analyse(
+                    req.message,
+                    analyse,
+                    disposition,
+                    analyse_ms,
+                    phase=phase,
+                    cycle=orch_cycle + 1,
+                ):
+                    yield line
 
-                early_text = early_reply_from_analysis_pre(analysis_pre)
-                if res_pre in ("clarify", "cannot") and early_text:
-                    for i in range(0, len(early_text), 48):
-                        yield _sse({"type": "token", "content": early_text[i : i + 48]})
-                    await persist_chat_turn(
-                        user_id=req.user_id,
-                        user_message=req.message,
-                        assistant_text=early_text,
-                        short_ttl_minutes=short_ttl_minutes,
-                        short_limit=short_limit,
-                        recent_limit=recent_limit,
-                        chat_session_id=csid,
-                        mid_summaries=mid_summaries,
-                        recent_messages=recent_messages,
-                        request_id=rid,
-                    )
-                    timings["total_ms"] = int((time.time() - wall_start) * 1000)
-                    schedule_async_self_reflection(
-                        user_id=req.user_id,
-                        request_id=rid,
-                        user_message=req.message,
-                        assistant_text=early_text,
-                        chat_session_id=csid,
-                        early_exit=res_pre,
-                        planning_cycle_complete=False,
-                        timings=timings,
-                    )
-                    CHAT_REQUESTS.labels(f"early_{res_pre}").inc()
-                    yield _sse(
-                        {
-                            "type": "done",
-                            "early_exit": res_pre,
-                            "planning_cycle_complete": False,
-                            "request_id": rid,
-                            "timings": timings,
-                        }
-                    )
-                    return
-                if res_pre in ("clarify", "cannot") and not early_text:
-                    _log.warning(
-                        "首轮分析 resolution=%s 但缺少追问/原因正文，降级为 proceed",
-                        res_pre,
-                        extra=extra_log,
-                    )
-                    res_pre = "proceed"
+                if disposition in TERMINAL_DISPOSITIONS:
+                    output_disposition = disposition
+                    terminal = True
+                    break
 
-                t_r = time.time()
-                long_term_context = await retrieve_long_term_for_turn(
-                    req.user_id,
-                    rewritten or req.message,
-                    mongo_limit=mongo_retrieval_limit,
-                    qdrant_limit=qdrant_retrieval_limit,
-                )
-                retrieve_ms = int((time.time() - t_r) * 1000)
-                timings["retrieve_ms"] = retrieve_ms
-                yield _sse(
-                    {
-                        "type": "retrieve",
-                        "retrieve_ms": retrieve_ms,
-                        "hits": len(long_term_context),
-                        "request_id": rid,
-                    }
-                )
+                if disposition not in EXECUTE_DISPOSITIONS:
+                    _log.warning("未知 disposition=%s，按 proceed 处理", disposition)
+                    disposition = "proceed"
+
+                if not long_term_fetched:
+                    t_r = time.time()
+                    long_term_context = await retrieve_long_term_for_turn(
+                        req.user_id,
+                        rewritten or req.message,
+                        mongo_limit=mongo_retrieval_limit,
+                        qdrant_limit=qdrant_retrieval_limit,
+                        memory_hints=memory_hints,
+                    )
+                    retrieve_ms = int((time.time() - t_r) * 1000)
+                    timings["retrieve_ms"] = retrieve_ms
+                    for line in em.emit_retrieve(
+                        rewritten or req.message,
+                        len(long_term_context),
+                        retrieve_ms,
+                        memory_hints=memory_hints,
+                        long_term_hits=long_term_context,
+                    ):
+                        yield line
+                    long_term_fetched = True
 
                 plan, plan_ms = await run_plan(
-                    analysis_pre=analysis_pre,
+                    analyse=analyse,
                     user_message=req.message,
                     rewritten=rewritten or req.message,
                     servers=servers,
+                    retrieved_tool_names=retrieved_tool_names,
+                    code_to_name=code_to_name,
                     long_term_context=long_term_context,
                 )
-                timings["plan_ms"] = plan_ms
-                yield _sse(
-                    {
-                        "type": "plan",
-                        "plan_ms": plan_ms,
-                        "requires_tools": bool(plan.get("requires_tools", True)),
-                        "plan_steps": len(plan.get("plan_steps") or []),
-                        "request_id": rid,
-                    }
-                )
+                timings["plan_ms"] = timings.get("plan_ms", 0) + plan_ms
+                for line in em.emit_plan(plan, plan_ms):
+                    yield line
 
-                analysis_close, analysis_close_ms = await run_analysis_close(
+                if not plan.get("requires_tools", True):
+                    output_disposition = "close"
+                    terminal = True
+                    break
+
+                exec_tool_names = resolve_tools_for_execution(
+                    servers,
+                    analyse=analyse,
                     plan=plan,
-                    user_message=req.message,
+                    retrieved_tool_names=retrieved_tool_names,
+                    code_to_name=code_to_name,
+                )
+                agent = build_agent(
+                    servers,
+                    tool_names=exec_tool_names,
+                    execute_mode=True,
+                )
+                exec_messages = build_execute_messages(
+                    plan=plan,
+                    analyse=analyse,
                     long_term_context=long_term_context,
+                    recent_messages=recent_messages,
+                    user_msg=user_msg,
                 )
-                timings["analysis_close_ms"] = analysis_close_ms
-                yield _sse(
-                    {
-                        "type": "analysis_close",
-                        "analysis_close_ms": analysis_close_ms,
-                        "briefing_preview": (analysis_close.get("final_briefing") or "")[:240],
-                        "request_id": rid,
-                    }
+                agent_config = {
+                    "configurable": {"thread_id": str(req.user_id), "token": req.token}
+                }
+                batch_results: list[dict] = []
+                t_ex = time.time()
+                async for kind, payload in stream_tool_execution(
+                    agent, exec_messages, agent_config, em
+                ):
+                    if kind == "line":
+                        yield payload
+                    elif kind == "result":
+                        batch_results = payload
+                timings["execute_ms"] = timings.get("execute_ms", 0) + int(
+                    (time.time() - t_ex) * 1000
                 )
+                all_tool_results.extend(batch_results)
+                prior_analyse = analyse
+                executed_once = True
+                orch_cycle += 1
 
-                planning_cycle_complete = True
-                round_sys = build_round_system_message(
-                    analysis_pre=analysis_pre,
-                    plan=plan,
-                    close=analysis_close,
-                )
-                if round_sys.strip():
-                    messages.append({"role": "system", "content": round_sys})
-            else:
-                t_r = time.time()
-                long_term_context = await retrieve_long_term_for_turn(
-                    req.user_id,
-                    rewritten or req.message,
-                    mongo_limit=mongo_retrieval_limit,
-                    qdrant_limit=qdrant_retrieval_limit,
-                )
-                retrieve_ms = int((time.time() - t_r) * 1000)
-                timings["retrieve_ms"] = retrieve_ms
-                yield _sse(
-                    {
-                        "type": "retrieve",
-                        "retrieve_ms": retrieve_ms,
-                        "hits": len(long_term_context),
-                        "request_id": rid,
-                    }
+            if not terminal:
+                output_disposition = "close"
+                force_output_note = (
+                    f"已达最大编排轮次 {max_cycles}，请基于已有工具结果谨慎成稿。"
                 )
 
-            if use_planning_round and res_pre == "proceed" and not planning_cycle_complete:
-                _ERROR_LOG.error(
-                    "编排违反：resolution=proceed 时必须在执行前完成 检索→计划→分析收口",
-                    extra=extra_log,
-                )
+            final_reply, output_ms = await run_output(
+                disposition=output_disposition,
+                analyse=analyse,
+                plan=plan,
+                tool_results=all_tool_results,
+                user_message=req.message,
+                long_term_context=long_term_context,
+                force_note=force_output_note,
+            )
+            timings["output_ms"] = output_ms
+            for line in em.emit_output(final_reply[:240], output_ms):
+                yield line
 
-            if long_term_context:
-                long_term_json = json.dumps(long_term_context, ensure_ascii=False)
-                messages.append({"role": "system", "content": f"长期记忆(JSON 列表): {long_term_json}"})
+            for i in range(0, len(final_reply), 48):
+                for line in em.emit_chunk(final_reply[i : i + 48], channel="answer"):
+                    yield line
+            assistant_text = final_reply.strip()
+            planning_cycle_complete = True
 
-            messages.extend(recent_messages)
-            messages.append(user_msg)
-
-            agent_config = {"configurable": {"thread_id": str(req.user_id), "token": req.token}}
-            assistant_chunks = []
-
-            t_ex = time.time()
-            async for event in agent.astream_events(
-                {"messages": messages},
-                config=agent_config,
-                version="v2",
-            ):
-                kind = event.get("event", "")
-
-                if kind == "on_chat_model_stream":
-                    chunk = event.get("data", {}).get("chunk")
-                    if chunk and chunk.content:
-                        assistant_chunks.append(chunk.content)
-                        yield _sse({"type": "token", "content": chunk.content})
-
-                elif kind == "on_tool_start":
-                    tool_name = event.get("name", "unknown")
-                    yield _sse({"type": "tool_start", "tool": tool_name, "request_id": rid})
-
-                elif kind == "on_tool_end":
-                    output = str(event.get("data", {}).get("output", ""))
-                    preview = output[:100] + ("..." if len(output) > 100 else "")
-                    yield _sse({"type": "tool_end", "preview": preview, "request_id": rid})
-
-            timings["execute_ms"] = int((time.time() - t_ex) * 1000)
             timings["total_ms"] = int((time.time() - wall_start) * 1000)
 
-            assistant_text = "".join(assistant_chunks).strip()
+            mid_summary_rolled = False
             if assistant_text:
-                await persist_chat_turn(
+                mid_summary_rolled = await persist_chat_turn(
                     user_id=req.user_id,
                     user_message=req.message,
                     assistant_text=assistant_text,
@@ -410,33 +403,42 @@ async def chat(
                     request_id=rid,
                 )
 
-            schedule_async_self_reflection(
-                user_id=req.user_id,
-                request_id=rid,
-                user_message=req.message,
-                assistant_text=assistant_text,
-                chat_session_id=csid,
-                early_exit=None,
-                planning_cycle_complete=planning_cycle_complete,
-                timings=timings,
+            early_exit = (
+                output_disposition
+                if output_disposition in ("clarify", "cannot", "answer")
+                else None
             )
+            if mid_summary_rolled:
+                schedule_post_turn_memory(
+                    user_id=req.user_id,
+                    request_id=rid,
+                    user_message=req.message,
+                    assistant_text=assistant_text,
+                    chat_session_id=csid,
+                    early_exit=early_exit,
+                    planning_cycle_complete=planning_cycle_complete,
+                    timings=timings,
+                )
             CHAT_REQUESTS.labels("ok").inc()
-            yield _sse(
-                {
-                    "type": "done",
-                    "planning_cycle_complete": planning_cycle_complete,
-                    "request_id": rid,
-                    "timings": timings,
-                }
-            )
+            usage_tracker = get_turn_usage_tracker()
+            usage = usage_tracker.to_dict() if usage_tracker else {}
+            for line in em.emit_done(
+                timings=timings,
+                planning_cycle_complete=planning_cycle_complete,
+                early_exit=early_exit,
+                usage=usage or None,
+            ):
+                yield line
 
         except Exception:
             CHAT_REQUESTS.labels("error").inc()
-            _ERROR_LOG.error(
+            _ERROR_LOG.exception(
                 "chat 异常",
-                extra={"user_id": req.user_id, "request_id": rid, "traceback": traceback.format_exc()},
+                extra={"user_id": req.user_id, "request_id": rid},
             )
-            yield _sse({"type": "error", "content": f"内部错误: {traceback.format_exc()}", "request_id": rid})
+            err_em = em if em is not None else StreamEmitter(rid, legacy_mirror=False)
+            for line in err_em.emit_error("服务暂时不可用，请稍后再试", code="INTERNAL"):
+                yield line
 
     return StreamingResponse(
         event_stream(),
@@ -494,14 +496,13 @@ async def memory_clear_short(
 
 @app.post("/memory/session-end")
 async def memory_session_end(req: MemoryCommitRequest):
-    """由前端/后端在会话结束、WS 关闭或超时后显式触发长期记忆收尾。同时清理 session。"""
-    result = await commit_long_term_on_session_end(req.user_id, reason=req.reason)
+    """会话结束/超时/WS 关闭：剩余短期压中期摘要 → 长期记忆收尾 → 清 session。"""
+    sid = (req.chat_session_id or "").strip() or None
+    result = await commit_long_term_on_session_end(
+        req.user_id, reason=req.reason, chat_session_id=sid
+    )
     await clear_session(req.user_id)
     return {"status": "ok", "result": result}
-
-
-def _sse(data: dict) -> str:
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 if __name__ == "__main__":

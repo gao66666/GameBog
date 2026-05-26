@@ -160,3 +160,51 @@ func (r *RedisCommentRepository) DeleteUserCYList(userID uint64) error {
 	}
 	return r.client.Del(ctx, fmt.Sprintf("comment:cy:list:%d", userID)).Err()
 }
+
+const articleCommentListCacheTTL = 2 * time.Minute
+
+type articleCommentListCachePayload struct {
+	List  []*models.CommentVO `json:"list"`
+	Total int64               `json:"total"`
+}
+
+func articleCommentListCacheKey(articleID uint64, page, size, limit int) string {
+	return fmt.Sprintf("comment:article:list:%d:p:%d:s:%d:l:%d", articleID, page, size, limit)
+}
+
+func (r *RedisCommentRepository) GetArticleCommentList(articleID uint64, page, size, limit int) ([]*models.CommentVO, int64, bool, error) {
+	if r == nil || r.client == nil {
+		return nil, 0, false, nil
+	}
+	val, err := r.client.Get(ctx, articleCommentListCacheKey(articleID, page, size, limit)).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, 0, false, nil
+		}
+		return nil, 0, false, err
+	}
+	var payload articleCommentListCachePayload
+	if err := json.Unmarshal([]byte(val), &payload); err != nil {
+		return nil, 0, false, err
+	}
+	return payload.List, payload.Total, true, nil
+}
+
+func (r *RedisCommentRepository) SetArticleCommentList(articleID uint64, page, size, limit int, list []*models.CommentVO, total int64) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	payload := articleCommentListCachePayload{List: list, Total: total}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return r.client.Set(ctx, articleCommentListCacheKey(articleID, page, size, limit), body, articleCommentListCacheTTL).Err()
+}
+
+func (r *RedisCommentRepository) InvalidateArticleCommentList(articleID uint64) error {
+	if r == nil || r.client == nil || articleID == 0 {
+		return nil
+	}
+	return deleteKeysByPattern(r.client, fmt.Sprintf("comment:article:list:%d:*", articleID))
+}

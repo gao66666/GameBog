@@ -55,12 +55,13 @@ type RedisConfig struct {
 }
 
 type LogConfig struct {
-	Level           string `mapstructure:"level"`
-	Common_filename string `mapstructure:"common_filename"`
-	Error_filename  string `mapstructure:"error_filename"`
-	MaxSize         int    `mapstructure:"max_size"`
-	MaxAge          int    `mapstructure:"max_age"`
-	MaxBackups      int    `mapstructure:"max_backups"`
+	Level              string `mapstructure:"level"`
+	Common_filename    string `mapstructure:"common_filename"`
+	Error_filename     string `mapstructure:"error_filename"`
+	AgentTurnFilename string `mapstructure:"agent_turn_filename"`
+	MaxSize            int    `mapstructure:"max_size"`
+	MaxAge             int    `mapstructure:"max_age"`
+	MaxBackups         int    `mapstructure:"max_backups"`
 }
 
 type MessageQueueConfig struct {
@@ -171,6 +172,24 @@ func loadSecretFromEnv() {
 	if val := os.Getenv("SEARCH_API_KEY"); val != "" {
 		Conf.SearchConfig.APIKey = val
 	}
+	if Conf.MySQLConfig == nil {
+		Conf.MySQLConfig = &MySQLConfig{}
+	}
+	if val := os.Getenv("MYSQL_PASSWORD"); val != "" {
+		Conf.MySQLConfig.Password = val
+	}
+	if Conf.RedisConfig == nil {
+		Conf.RedisConfig = &RedisConfig{}
+	}
+	if val := os.Getenv("REDIS_PASSWORD"); val != "" {
+		Conf.RedisConfig.Password = val
+	}
+	if Conf.AuthConfig == nil {
+		Conf.AuthConfig = &AuthConfig{}
+	}
+	if val := os.Getenv("AUTH_JWT_SECRET"); val != "" {
+		Conf.AuthConfig.JWTSecret = val
+	}
 }
 
 func setDefaults() {
@@ -232,9 +251,8 @@ func setDefaults() {
 	if Conf.AuthConfig.JWTExpireHours <= 0 {
 		Conf.AuthConfig.JWTExpireHours = 24
 	}
-	if Conf.AuthConfig.JWTSecret == "" {
-		Conf.AuthConfig.JWTSecret = "change-me-in-production"
-	}
+	// JWTSecret 必须通过环境变量 AUTH_JWT_SECRET 提供，不设硬编码默认值
+	// validate() 会在为空时报错
 	if Conf.SecurityConfig.RateLimitPerMinute <= 0 {
 		Conf.SecurityConfig.RateLimitPerMinute = 120
 	}

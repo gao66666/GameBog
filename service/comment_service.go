@@ -71,6 +71,9 @@ func (s *CommentService) DeleteComment(userID uint64, commentID uint64) error {
 	if comment.CommentType == "cy" && s.redisRepo != nil {
 		_ = s.redisRepo.DeleteUserCYList(userID)
 	}
+	if s.redisRepo != nil && comment.ArticleID != 0 {
+		_ = s.redisRepo.InvalidateArticleCommentList(comment.ArticleID)
+	}
 	return nil
 }
 
@@ -89,6 +92,10 @@ func (s *CommentService) CreateComment(comment *models.Comment) (*models.Comment
 		if err := s.pointsSvc.EnqueueEarn(comment.UserID, "comment", comment.ID, 0); err != nil {
 			zap.L().Warn("评论积分发放失败", zap.Uint64("comment_id", comment.ID), zap.Error(err))
 		}
+	}
+
+	if s.redisRepo != nil && comment.ArticleID != 0 {
+		_ = s.redisRepo.InvalidateArticleCommentList(comment.ArticleID)
 	}
 
 	return comment, nil
@@ -145,6 +152,27 @@ func (s *CommentService) sendCommentNotification(c *models.Comment) {
 // 服务层拿取到的是用户所有的信息，但我要进行处理，只拿取CommentUser内的信息放入CommentVo
 // limit表示获取每楼前多少个评论
 func (s *CommentService) GetCommentByArticleID(aid uint64, page, size, limit int) ([]*models.CommentVO, int64, error) {
+	if s.redisRepo != nil {
+		if cached, total, hit, err := s.redisRepo.GetArticleCommentList(aid, page, size, limit); err == nil && hit {
+			return cached, total, nil
+		} else if err != nil {
+			zap.L().Warn("读取文章评论缓存失败，降级查库", zap.Error(err))
+		}
+	}
+
+	list, total, err := s.loadCommentByArticleID(aid, page, size, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	if s.redisRepo != nil {
+		if err := s.redisRepo.SetArticleCommentList(aid, page, size, limit, list, total); err != nil {
+			zap.L().Warn("写入文章评论缓存失败", zap.Error(err))
+		}
+	}
+	return list, total, nil
+}
+
+func (s *CommentService) loadCommentByArticleID(aid uint64, page, size, limit int) ([]*models.CommentVO, int64, error) {
 	// 1. 拿到这一页的 size 个楼长 ID
 	rootIds, err := s.commentRepo.GetRootIDSByArticleID(aid, page, size)
 	if err != nil || len(rootIds) == 0 {
@@ -322,6 +350,9 @@ func (s *CommentService) CreateCY(comment *models.Comment) (*models.Comment, err
 	// 清理 CY 列表缓存
 	if s.redisRepo != nil {
 		_ = s.redisRepo.DeleteUserCYList(comment.UserID)
+		if comment.ArticleID != 0 {
+			_ = s.redisRepo.InvalidateArticleCommentList(comment.ArticleID)
+		}
 	}
 	return saved, nil
 }

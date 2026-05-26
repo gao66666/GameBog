@@ -79,11 +79,7 @@ func (s *PointsService) earnPoints(userID uint64, refType string, refID uint64, 
 		wallet, err := s.pointsDB.GetWalletByUserIDTx(tx, userID)
 		if err != nil {
 			if err == database.ErrWalletNotFound {
-				wallet = &models.UserWallet{UserID: userID}
-				if createErr := tx.Create(wallet).Error; createErr != nil {
-					return createErr
-				}
-				wallet, err = s.pointsDB.GetWalletByUserIDTx(tx, userID)
+				wallet, err = s.pointsDB.CreateWalletInTx(tx, userID)
 				if err != nil {
 					return err
 				}
@@ -177,6 +173,26 @@ func (s *PointsService) StartReconcileTicker() {
 
 // GetWallet 获取用户积分账户
 func (s *PointsService) GetWallet(userID uint64) (*models.UserWallet, error) {
+	return s.pointsDB.GetWallet(userID)
+}
+
+// ListMyTransactions 按用户 ID 查询 points_transactions 流水（分页）。
+func (s *PointsService) ListMyTransactions(userID uint64, page, size int) ([]models.PointsTransaction, int64, error) {
+	return s.pointsDB.ListTransactionsByUser(userID, page, size)
+}
+
+// EnsureWallet 不存在则创建并赠送初始积分。
+func (s *PointsService) EnsureWallet(userID uint64) (*models.UserWallet, error) {
+	wallet, err := s.pointsDB.GetWallet(userID)
+	if err == nil {
+		return wallet, nil
+	}
+	if err != database.ErrWalletNotFound {
+		return nil, err
+	}
+	if err := s.pointsDB.CreateWallet(userID); err != nil {
+		return nil, err
+	}
 	return s.pointsDB.GetWallet(userID)
 }
 

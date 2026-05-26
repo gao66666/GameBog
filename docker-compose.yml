@@ -31,16 +31,25 @@ services:
       - MQ_NSQ_ADDR=nsqd:4150
       - SEARCH_ENABLED=false
       - AGENT_URL=http://host.docker.internal:9091
+      # 飞书机器人（可选）：开放平台自建应用 + 事件订阅 im.message.receive_v1
+      # - FEISHU_APP_ID=
+      # - FEISHU_APP_SECRET=
+      # - FEISHU_VERIFICATION_TOKEN=
+      # - FEISHU_ENCRYPT_KEY=
       - AUTH_JWT_SECRET=change-me-in-production
     depends_on:
       mysql:
         condition: service_started
       redis:
         condition: service_started
+      mongodb:
+        condition: service_started
+      qdrant:
+        condition: service_started
       kafka:
         # 勿用 service_healthy：镜像内 healthcheck 易失败会导致 compose 永久卡在 Waiting
         condition: service_started
-    command: sh -c "go mod download && go run main.go"
+    command: sh -c "go mod download && go run ."
 
   # Vue 前端开发：Vite 热更新，无需本机安装 Node/npm
   webapp-dev:
@@ -204,7 +213,7 @@ services:
 
   # Qdrant: 长期记忆的向量检索存储
   qdrant:
-    image: qdrant/qdrant:v1.10.1
+    image: qdrant/qdrant:v1.18.0
     container_name: blog-qdrant
     restart: unless-stopped
     ports:

@@ -327,3 +327,64 @@
   width: 18px;
   height: 18px;
 }
+
+.chat-msg-stream-meta .bubble-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 200px;
+}
+
+.agent-phase-skeleton {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #6e6e73;
+}
+
+.agent-phase-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6366f1;
+  animation: agent-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes agent-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.agent-tool-pill {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #eef2ff;
+  color: #4338ca;
+  border: 1px solid #c7d2fe;
+}
+
+.agent-tool-pill.done {
+  background: #f0fdf4;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+
+.agent-tool-pill.fail {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+.chat-token-status.is-busy .dot {
+  background: #6366f1;
+  animation: agent-pulse 1.2s ease-in-out infinite;
+}

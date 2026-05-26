@@ -173,23 +173,6 @@ func (nh *NotificationHandler) HandleWS(c *gin.Context) {
 	}
 }
 
-// RouteAgentMessages 注册 melody HandleMessage，将 agent_chat 类消息路由到 AgentHandler。
-// 必须在 NewNotificationHandler 之后、有 AgentHandler 实例时调用。
-func (nh *NotificationHandler) RouteAgentMessages(agent *AgentHandler) {
-	if nh == nil || nh.Meld == nil || agent == nil {
-		return
-	}
-	agent.wsIdle = nh
-	nh.Meld.HandleMessage(func(s *melody.Session, msg []byte) {
-		if uid, ok := s.Get("userID"); ok {
-			if userID, ok := uid.(uint64); ok {
-				nh.touchWSIdleTimer(userID)
-			}
-		}
-		agent.HandleMessage(s, msg)
-	})
-}
-
 // GetUserOnlineStatus 公开查询用户在线状态（WebSocket 是否存在活跃连接）。
 func (nh *NotificationHandler) GetUserOnlineStatus(c *gin.Context) {
 	idStr := c.Param("id")

@@ -4,6 +4,7 @@ import { RouterLink, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Delete } from '@element-plus/icons-vue'
 import AppLayout from '@/layouts/AppLayout.vue'
+import PointsLedgerDialog from '@/components/PointsLedgerDialog.vue'
 import { api } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { ensureWSConnected, useWebSocket } from '@/composables/useWebSocket'
@@ -17,6 +18,7 @@ const DEFAULT_COVER =
 
 const activeTab = ref('articles')
 const showSettings = ref(false)
+const showPointsLedger = ref(false)
 const settingsMsg = ref('')
 const dmDot = ref(false)
 
@@ -304,13 +306,22 @@ onMounted(async () => {
               <div class="me-stat"><span class="me-stat-num">{{ stats.articles }}</span><span class="me-stat-label">文章</span></div>
               <div class="me-stat"><span class="me-stat-num">{{ stats.follows }}</span><span class="me-stat-label">关注</span></div>
               <div class="me-stat"><span class="me-stat-num">{{ stats.fans }}</span><span class="me-stat-label">粉丝</span></div>
-              <div class="me-stat"><span class="me-stat-num">{{ stats.points }}</span><span class="me-stat-label">积分</span></div>
+              <button
+                type="button"
+                class="me-stat me-stat--clickable"
+                title="查看积分流水"
+                @click="showPointsLedger = true"
+              >
+                <span class="me-stat-num">{{ stats.points }}</span>
+                <span class="me-stat-label">积分</span>
+              </button>
               <div class="me-stat"><span class="me-stat-num">{{ profile.balance }}</span><span class="me-stat-label">余额</span></div>
             </div>
             <div class="me-actions">
               <el-badge :is-dot="dmDot" class="me-action-badge">
                 <RouterLink to="/dm" class="me-action-btn">私信</RouterLink>
               </el-badge>
+              <RouterLink to="/points-mall" class="me-action-btn">积分商城</RouterLink>
               <button type="button" class="me-action-btn" @click="showSettings = true">设置</button>
               <button type="button" class="me-action-btn" @click="logout">退出</button>
             </div>
@@ -405,6 +416,8 @@ onMounted(async () => {
         </main>
       </div>
     </div>
+
+    <PointsLedgerDialog v-model="showPointsLedger" />
 
     <el-dialog v-model="showSettings" title="编辑资料" width="400px">
       <el-form label-position="top">

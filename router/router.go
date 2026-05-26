@@ -6,7 +6,7 @@
 //    NSQ article_stats 与缓冲落库见 mq/article_consumer.go（StatsWorker / CommentStatsWorker）、mq/nsq_init.go。
 //  2 积分入账：Redis 日上限 + MySQL 同事务钱包与流水见 service/points_service.go（EnqueueEarn / EarnPointsWithTxnID）；
 //    Kafka topic points.earn、消费重试与死信 points.earn.dlq 见 mq/kafka_init.go，消费端 handler/points_handler.go；未启用 Kafka 时同入口降级同步。
-//  3 积分钱包：HTTP 见 handler/points_handler.go；商城式同步扣款若未合入请勿在简历写已实现。
+//  3 积分商城：Redis Lua 扣库存 + MySQL 占码与扣款见 database/points_mall_*.go、service/points_mall_service.go、handler/points_mall_handler.go。
 //  4 工程横切：JWT middleware/auth.go、限流 middleware/rate_limit.go、布隆与读穿透 cache/article_guard.go、
 //    雪花 tool/snowflake_module.go、Compose 见仓库 docker-compose*。
 //  5 实时通知：WebSocket 先推、离线异步落库见 handler/notification_handler.go（mq.NotifySink）；
@@ -18,6 +18,9 @@ import (
 
 	"github.com/gao66666/GoBlog/database"
 	"github.com/gao66666/GoBlog/handler"
+	"github.com/gao66666/GoBlog/handler/channel"
+	"github.com/gao66666/GoBlog/handler/channel/feishu"
+	"github.com/gao66666/GoBlog/handler/channel/wecom"
 	"github.com/gao66666/GoBlog/logger"
 	"github.com/gao66666/GoBlog/middleware"
 	"github.com/gao66666/GoBlog/mq"
@@ -42,8 +45,10 @@ type App struct {
 	TopicHandler             *handler.TopicHandler
 	GameHandler              *handler.GameHandler
 	PointsHandler            *handler.PointsHandler
+	PointsMallHandler        *handler.PointsMallHandler
 	PointsSvc                *service.PointsService
 	AgentHandler             *handler.AgentHandler
+	ChannelHub               *channel.Hub
 }
 
 // StartPeriodicJobs 启动与 Kafka 无关的后台周期任务（例如通知批量落库 ticker、积分对账）。
@@ -82,6 +87,7 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	dmRepo := database.NewDMRepository(db)
 	dmRedis := database.NewRedisDMRepository(rdb)
 	topicRepo := database.NewTopicRepository(db)
+	topicRedis := database.NewRedisTopicRepository(rdb)
 	gameRepo := database.NewGameRepository(db)
 	gameRedis := database.NewRedisGameRepository(rdb)
 
@@ -89,6 +95,11 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	pointsRedis := database.NewRedisPointsRepository(rdb)
 	pointsSvc := service.NewPointsService(db, pointsRepo, pointsRedis)
 	pointsHandler := handler.NewPointsHandler(pointsSvc)
+
+	mallRepo := database.NewPointsMallRepository(db)
+	mallRedis := database.NewRedisPointsMallRepository(rdb)
+	mallSvc := service.NewPointsMallService(mallRepo, mallRedis, pointsRepo)
+	mallHandler := handler.NewPointsMallHandler(mallSvc)
 
 	if err := userRepo.InitTable(); err != nil {
 		zap.L().Warn("用户表初始化失败", zap.Error(err))
@@ -117,13 +128,20 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	if err := pointsRepo.InitTable(); err != nil {
 		zap.L().Warn("积分表初始化失败", zap.Error(err))
 	}
+	if err := mallRepo.InitTable(); err != nil {
+		zap.L().Warn("积分商城表初始化失败", zap.Error(err))
+	} else {
+		mallSvc.InitStockCache()
+	}
 
 	// 2. Service 层
 	userSvc := service.NewUserService(userRepo, userRedis, followRepo)
 	articleSvc := service.NewArticleService(articleRepo, userRepo, commentRepo, followRepo, articleRedis, topicRepo, gameRepo, pointsSvc, userSvc)
 	dmSvc := service.NewDMService(dmRepo, userRepo, dmRedis)
-	topicSvc := service.NewTopicService(topicRepo, articleRepo)
+	topicSvc := service.NewTopicService(topicRepo, articleRepo, topicRedis)
 	gameSvc := service.NewGameService(gameRepo, gameRedis, topicRepo)
+	searchRedis := database.NewRedisSearchRepository(rdb)
+	searchSvc := service.NewSearchService(articleRepo, userRepo, commentRepo, searchRedis)
 
 	// 3. Handler 层（通知 WebSocket 需先于依赖 NotifySink 的 Service 创建）
 	notificationHandler := handler.NewNotificationHandler(notificationRepo, notificationRedis)
@@ -134,10 +152,13 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	commentSvc := service.NewCommentService(commentRepo, articleRepo, userRepo, commentRedis, notificationHandler, pointsSvc)
 	topicHandler := handler.NewTopicHandler(topicSvc, followSvc)
 
-	// Agent：短期对话在博客 Redis（与 Agent 侧 Redis 解耦）；WebSocket 仍直连 Agent
+	// Agent：短期对话在博客 Redis（与 Agent 侧 Redis 解耦）；聊天经 HTTP SSE ChatProxy
 	agentChatStore := database.NewRedisAgentChatStore(rdb)
 	agentHandler := handler.NewAgentHandler(agentChatStore)
-	notificationHandler.RouteAgentMessages(agentHandler)
+	channelStore := database.NewChannelStore(rdb)
+	channelHub := channel.NewHub(agentHandler, agentChatStore, channelStore)
+	channelHub.Register(feishu.NewAdapter(feishu.LoadConfigFromEnv()))
+	channelHub.Register(wecom.NewAdapter(wecom.LoadConfigFromEnv()))
 
 	return &App{
 		UserHandler:              handler.NewUserHandler(userSvc),
@@ -146,13 +167,15 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 		FollowHandler:            handler.NewFollowHandler(followSvc, userSvc),
 		NotificationHandler:      notificationHandler,
 		NotificationStoreHandler: notificationStoreHandler,
-		SearchHandler:            handler.NewSearchHandler(articleRepo, userRepo, commentRepo),
+		SearchHandler:            handler.NewSearchHandler(searchSvc),
 		DMHandler:                dmHandler,
 		TopicHandler:             topicHandler,
 		GameHandler:              handler.NewGameHandler(gameSvc, userSvc),
 		PointsHandler:            pointsHandler,
+		PointsMallHandler:        mallHandler,
 		PointsSvc:                pointsSvc,
 		AgentHandler:             agentHandler,
+		ChannelHub:               channelHub,
 	}
 }
 
@@ -208,6 +231,7 @@ func RouterInit(mode string, app *App) *gin.Engine {
 	r.GET("/agent", handler.AgentPage)
 	r.GET("/game-library", handler.GamesLibraryPage)
 	r.GET("/game/:id", handler.GameDetailPage)
+	r.GET("/points-mall", handler.PointsMallPage)
 
 	r.GET("/healthz", handler.Healthz)
 	r.GET("/readyz", handler.Readyz)
@@ -248,6 +272,7 @@ func registerPublicRoutes(g *gin.RouterGroup, app *App) {
 	g.GET("/topics/:id", app.TopicHandler.GetTopicPublic)
 	g.GET("/topics/:id/articles", app.TopicHandler.GetTopicArticlesPublic)
 	g.GET("/topics/:id/discussions", app.TopicHandler.GetTopicDiscussionsPublic)
+	g.GET("/games/search", app.GameHandler.SearchGames)
 	g.GET("/games/:id", app.GameHandler.GetGame)
 	g.GET("/games", app.GameHandler.ListGames)
 	g.GET("/games/:id/reviews", app.GameHandler.ListReviews)
@@ -255,6 +280,13 @@ func registerPublicRoutes(g *gin.RouterGroup, app *App) {
 	g.GET("/game-reviews/:id/comments", app.GameHandler.ListReviewComments)
 	g.GET("/users/:id/points", app.PointsHandler.GetUserWallet)
 	g.GET("/users/:id/games", app.GameHandler.GetUserGamePlays)
+	g.GET("/points/mall/products/search", app.PointsMallHandler.SearchProducts)
+	g.GET("/points/mall/products", app.PointsMallHandler.ListProducts)
+	g.GET("/points/mall/products/:id", app.PointsMallHandler.GetProduct)
+
+	if app.ChannelHub != nil {
+		app.ChannelHub.MountRoutes(g)
+	}
 }
 
 func registerProtectedRoutes(g *gin.RouterGroup, app *App) {
@@ -314,6 +346,9 @@ func registerProtectedRoutes(g *gin.RouterGroup, app *App) {
 		authGroup.DELETE("/games/play/:gameId", app.GameHandler.DeleteMyGamePlay)
 
 		authGroup.GET("/points/wallet", app.PointsHandler.GetMyWallet)
+		authGroup.GET("/points/transactions", app.PointsHandler.ListMyTransactions)
 		authGroup.POST("/points/checkin", app.PointsHandler.Checkin)
+		authGroup.GET("/points/mall/orders", app.PointsMallHandler.ListMyOrders)
+		authGroup.POST("/points/mall/redeem", app.PointsMallHandler.Redeem)
 	}
 }

@@ -88,7 +88,14 @@ docker compose --profile app up -d --build
 
 ## 配置
 
-主配置：`setting/common.yaml`。生产环境务必覆盖 `auth.jwt_secret`。
+主配置：`setting/common.yaml`。敏感信息通过环境变量注入，不应直接写在配置文件中。
+
+| 环境变量              | 说明                      | 对应配置项            |
+| --------------------- | ------------------------- | --------------------- |
+| `AUTH_JWT_SECRET`     | JWT 签名密钥（**必填**）  | `auth.jwt_secret`     |
+| `MYSQL_PASSWORD`      | MySQL 密码                | `mysql.password`      |
+| `REDIS_PASSWORD`      | Redis 密码                | `redis.password`      |
+| `SEARCH_API_KEY`      | Elasticsearch API Key     | `search.api_key`      |
 
 常用项：`mq.nsq.enabled`、`mq.kafka`、搜索与 Agent 相关配置见 `agent/config/config.yaml`。
 

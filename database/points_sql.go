@@ -21,6 +21,9 @@ var (
 	ErrDailyLimitExceeded   = tool.NewBizError(400, 40024, "今日积分获取已达上限")
 )
 
+// InitialWalletBalance 新用户首次创建积分账户时的赠送余额。
+const InitialWalletBalance int64 = 100
+
 type PointsRepository struct {
 	db *gorm.DB
 }
@@ -66,18 +69,57 @@ func (r *PointsRepository) GetWalletForUpdate(tx *gorm.DB, userID uint64) (*mode
 	return &wallet, nil
 }
 
-// CreateWallet 创建用户积分账户
+// CreateWallet 创建用户积分账户并写入初始赠送流水（幂等：已存在则跳过）。
 func (r *PointsRepository) CreateWallet(userID uint64) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		_, err := r.CreateWalletInTx(tx, userID)
+		return err
+	})
+}
+
+// CreateWalletInTx 在事务内创建钱包 + 初始积分流水（已存在则返回现有账户）。
+func (r *PointsRepository) CreateWalletInTx(tx *gorm.DB, userID uint64) (*models.UserWallet, error) {
+	var existing models.UserWallet
+	err := tx.Where("user_id = ?", userID).First(&existing).Error
+	if err == nil {
+		return &existing, nil
+	}
+	if err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+
+	now := time.Now()
 	wallet := &models.UserWallet{
 		UserID:        userID,
-		Balance:       0,
+		Balance:       InitialWalletBalance,
 		FrozenBalance: 0,
 		Version:       0,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
-	if err := r.db.Create(wallet).Error; err != nil {
-		return err
+	if err := tx.Create(wallet).Error; err != nil {
+		if isDuplicateKeyError(err) {
+			return r.GetWalletByUserIDTx(tx, userID)
+		}
+		return nil, err
 	}
-	return nil
+
+	txnID := tool.PointsStableTxnID(userID, "initial_grant", userID, 0)
+	txn := &models.PointsTransaction{
+		TxnID:        txnID,
+		UserID:       userID,
+		Amount:       InitialWalletBalance,
+		Type:         "income",
+		RefType:      "initial_grant",
+		RefID:        userID,
+		BalanceAfter: InitialWalletBalance,
+		Description:  "新用户初始积分",
+		CreatedAt:    now,
+	}
+	if err := tx.Create(txn).Error; err != nil && !isDuplicateKeyError(err) {
+		return nil, err
+	}
+	return wallet, nil
 }
 
 // UpdateBalance 乐观锁更新余额（扣减时需确保 balance >= 0）
@@ -169,6 +211,42 @@ type PointsWalletLedgerMismatch struct {
 	UserID    uint64 `gorm:"column:user_id"`
 	Balance   int64  `gorm:"column:balance"`
 	LedgerSum int64  `gorm:"column:ledger_sum"`
+}
+
+// ListTransactionsByUser 按 user_id 分页查询积分流水（按时间倒序）。
+func (r *PointsRepository) ListTransactionsByUser(userID uint64, page, size int) ([]models.PointsTransaction, int64, error) {
+	if userID == 0 {
+		return []models.PointsTransaction{}, 0, nil
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 20
+	}
+	if size > 50 {
+		size = 50
+	}
+
+	tbl := (&models.PointsTransaction{}).TableName()
+	q := r.db.Table(tbl).Where("user_id = ?", userID)
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	list := make([]models.PointsTransaction, 0)
+	err := r.db.Table(tbl).
+		Where("user_id = ?", userID).
+		Order("created_at DESC, txn_id DESC").
+		Offset((page - 1) * size).
+		Limit(size).
+		Find(&list).Error
+	if err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
 }
 
 // ListWalletLedgerMismatches 对账抽样：仅返回前 limit 条不一致用户。

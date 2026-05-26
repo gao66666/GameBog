@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gao66666/GoBlog/database"
+	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/mq"
 	"github.com/gao66666/GoBlog/service"
 	"github.com/gao66666/GoBlog/tool"
@@ -41,22 +41,14 @@ func (h *PointsHandler) ProcessPointsEarnMessage(ctx context.Context, payload []
 
 // GetMyWallet 获取自己的积分账户
 func (h *PointsHandler) GetMyWallet(c *gin.Context) {
-	userID := c.GetUint64("userID")
+	userID := AuthUserID(c)
 	if userID == 0 {
 		tool.ResponseError(c, ErrInvalidToken)
 		return
 	}
 
-	wallet, err := h.se.GetWallet(userID)
+	wallet, err := h.se.EnsureWallet(userID)
 	if err != nil {
-		if err == database.ErrWalletNotFound {
-			// 未创建钱包等价于余额 0
-			tool.ResponseSuccess(c, gin.H{
-				"balance":       0,
-				"frozenBalance": 0,
-			})
-			return
-		}
 		tool.ResponseError(c, err)
 		return
 	}
@@ -76,15 +68,8 @@ func (h *PointsHandler) GetUserWallet(c *gin.Context) {
 		return
 	}
 
-	wallet, err := h.se.GetWallet(userID)
+	wallet, err := h.se.EnsureWallet(userID)
 	if err != nil {
-		if err == database.ErrWalletNotFound {
-			tool.ResponseSuccess(c, gin.H{
-				"balance":       0,
-				"frozenBalance": 0,
-			})
-			return
-		}
 		tool.ResponseError(c, err)
 		return
 	}
@@ -93,6 +78,33 @@ func (h *PointsHandler) GetUserWallet(c *gin.Context) {
 		"balance":       wallet.Balance,
 		"frozenBalance": wallet.FrozenBalance,
 	})
+}
+
+// ListMyTransactions 积分流水（分页）：按当前登录 user_id 查 points_transactions。
+func (h *PointsHandler) ListMyTransactions(c *gin.Context) {
+	userID := AuthUserID(c)
+	if userID == 0 {
+		tool.ResponseError(c, ErrInvalidToken)
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
+
+	list, total, err := h.se.ListMyTransactions(userID, page, size)
+	if err != nil {
+		tool.ResponseError(c, err)
+		return
+	}
+	if list == nil {
+		list = []models.PointsTransaction{}
+	}
+	tool.ResponseSuccess(c, gin.H{
+		"list":    list,
+		"total":   total,
+		"page":    page,
+		"size":    size,
+		"user_id": strconv.FormatUint(userID, 10),
+	}, "ok")
 }
 
 // Checkin 签到

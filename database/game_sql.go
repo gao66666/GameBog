@@ -1,6 +1,8 @@
 package database
 
 import (
+	"strings"
+
 	"github.com/gao66666/GoBlog/models"
 	"github.com/gao66666/GoBlog/tool"
 	"go.uber.org/zap"
@@ -69,6 +71,25 @@ func (r *GameRepository) ListGames(page, size int) ([]*models.Game, int64, error
 		return nil, 0, err
 	}
 	return list, total, nil
+}
+
+func (r *GameRepository) SearchGamesByName(q string, limit int) ([]*models.Game, error) {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return []*models.Game{}, nil
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 5 {
+		limit = 5
+	}
+	var list []*models.Game
+	err := r.db.Where("name LIKE ?", "%"+q+"%").
+		Order("name ASC").
+		Limit(limit).
+		Find(&list).Error
+	return list, err
 }
 
 func (r *GameRepository) CreateReview(review *models.GameReview) error {

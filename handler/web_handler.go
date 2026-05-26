@@ -45,6 +45,10 @@ func MePage(c *gin.Context) {
 	servePage(c, "me.tmpl", gin.H{})
 }
 
+func PointsMallPage(c *gin.Context) {
+	servePage(c, "me.tmpl", gin.H{})
+}
+
 func UserPage(c *gin.Context) {
 	servePage(c, "user.tmpl", gin.H{"UserID": c.Param("id")})
 }

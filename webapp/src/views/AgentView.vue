@@ -4,6 +4,12 @@ import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { http } from '@/api/http'
+import {
+  applyPresentationEvent,
+  createAgentStreamState,
+  type AgentStreamState,
+  type ToolActivity,
+} from '@/composables/useAgentStream'
 import '@/assets/agent.css'
 
 type SessionMeta = { session_id: string; title: string; updated_at: string }
@@ -26,7 +32,22 @@ const isSending = ref(false)
 const statusText = ref('就绪')
 const chatStageRef = ref<HTMLElement | null>(null)
 const streamingContent = ref('')
+const phaseSkeleton = ref('')
+const toolActivities = ref<ToolActivity[]>([])
 let abortController: AbortController | null = null
+let streamState: AgentStreamState = createAgentStreamState()
+
+function syncStreamRefs() {
+  streamingContent.value = streamState.streamingContent
+  statusText.value = streamState.statusText
+  phaseSkeleton.value = streamState.phaseSkeleton
+  toolActivities.value = [...streamState.toolActivities]
+}
+
+function resetStreamUi() {
+  streamState = createAgentStreamState()
+  syncStreamRefs()
+}
 
 const canSend = computed(() => !isSending.value && !!input.value.trim())
 
@@ -84,7 +105,7 @@ async function selectSession(sid: string) {
   if (!sid || sid === currentSessionId.value) return
   currentSessionId.value = sid
   messages.value = []
-  streamingContent.value = ''
+  resetStreamUi()
   showWelcome.value = true
   await loadHistory()
 }
@@ -126,7 +147,7 @@ async function newSession() {
     const sid = body.data?.session_id || ''
     if (sid) currentSessionId.value = sid
     messages.value = []
-    streamingContent.value = ''
+    resetStreamUi()
     showWelcome.value = true
     await refreshSessions()
   } catch (e) {
@@ -145,27 +166,27 @@ async function scrollBottom() {
   if (el) el.scrollTop = el.scrollHeight
 }
 
-function handleSSEEvent(event: { type: string; content?: string; tool?: string }) {
-  switch (event.type) {
-    case 'token':
-      streamingContent.value += event.content || ''
-      scrollBottom()
-      break
-    case 'done':
-      if (streamingContent.value.trim()) {
-        messages.value.push({ role: 'assistant', content: streamingContent.value })
-      }
-      streamingContent.value = ''
-      showWelcome.value = messages.value.length === 0
-      break
-    case 'error':
-      messages.value.push({
-        role: 'assistant',
-        content: '\n\n[错误: ' + (event.content || '未知错误') + ']',
-      })
-      streamingContent.value = ''
-      showWelcome.value = false
-      break
+function handleSSEEvent(raw: Record<string, unknown>) {
+  streamState = applyPresentationEvent(streamState, raw)
+  syncStreamRefs()
+
+  if (raw.type === 'done') {
+    if (streamState.streamingContent.trim()) {
+      messages.value.push({ role: 'assistant', content: streamState.streamingContent })
+    }
+    resetStreamUi()
+    showWelcome.value = messages.value.length === 0
+  } else if (raw.type === 'error') {
+    messages.value.push({
+      role: 'assistant',
+      content: '\n\n[错误: ' + (String(raw.content || '未知错误')) + ']',
+    })
+    resetStreamUi()
+    showWelcome.value = false
+  }
+
+  if (raw.type === 'text_chunk' || raw.type === 'token') {
+    scrollBottom()
   }
 }
 
@@ -180,10 +201,11 @@ async function sendMessage(text: string) {
 
   input.value = ''
   isSending.value = true
-  statusText.value = '思考中...'
+  resetStreamUi()
+  streamState.statusText = '思考中…'
+  syncStreamRefs()
   messages.value.push({ role: 'user', content: msg })
   showWelcome.value = false
-  streamingContent.value = ''
   await scrollBottom()
 
   abortController = new AbortController()
@@ -221,7 +243,7 @@ async function sendMessage(text: string) {
         const trimmed = line.trim()
         if (!trimmed.startsWith('data: ')) continue
         try {
-          handleSSEEvent(JSON.parse(trimmed.slice(6)))
+          handleSSEEvent(JSON.parse(trimmed.slice(6)) as Record<string, unknown>)
         } catch {
           /* ignore */
         }
@@ -230,7 +252,7 @@ async function sendMessage(text: string) {
 
     if (buffer.trim().startsWith('data: ')) {
       try {
-        handleSSEEvent(JSON.parse(buffer.trim().slice(6)))
+        handleSSEEvent(JSON.parse(buffer.trim().slice(6)) as Record<string, unknown>)
       } catch {
         /* ignore */
       }
@@ -241,10 +263,12 @@ async function sendMessage(text: string) {
       role: 'assistant',
       content: '\n\n[错误: ' + (err instanceof Error ? err.message : String(err)) + ']',
     })
-    streamingContent.value = ''
+    resetStreamUi()
   } finally {
     isSending.value = false
-    statusText.value = '就绪'
+    if (!streamState.done && !streamState.streamError) {
+      statusText.value = '就绪'
+    }
     abortController = null
     await refreshSessions()
     await scrollBottom()
@@ -319,7 +343,7 @@ onMounted(async () => {
 
       <section class="agent-workspace">
         <div ref="chatStageRef" class="agent-chat-stage">
-          <div v-if="showWelcome && !streamingContent" class="chat-welcome">
+          <div v-if="showWelcome && !streamingContent && !toolActivities.length && !phaseSkeleton" class="chat-welcome">
             <div class="chat-welcome-inner">
               <h1 class="chat-welcome-greeting">今天想聊些什么？</h1>
               <p class="chat-welcome-sub">我是小博，可以帮你搜文章、逛话题、找游戏。</p>
@@ -345,6 +369,26 @@ onMounted(async () => {
               <div class="avatar">{{ m.role === 'assistant' ? '博' : (auth.userName?.charAt(0) || '我') }}</div>
               <div class="bubble">{{ m.content }}</div>
             </div>
+            <div
+              v-if="isSending && (phaseSkeleton || toolActivities.length)"
+              class="chat-msg assistant chat-msg-stream-meta"
+            >
+              <div class="avatar">博</div>
+              <div class="bubble bubble-meta">
+                <div v-if="phaseSkeleton" class="agent-phase-skeleton" :class="'sk-' + phaseSkeleton">
+                  <span class="agent-phase-pulse" />
+                  <span>{{ statusText }}</span>
+                </div>
+                <div
+                  v-for="t in toolActivities"
+                  :key="t.id"
+                  class="agent-tool-pill"
+                  :class="{ done: t.done, fail: t.done && t.ok === false }"
+                >
+                  {{ t.content }}
+                </div>
+              </div>
+            </div>
             <div v-if="streamingContent" class="chat-msg assistant">
               <div class="avatar">博</div>
               <div class="bubble">{{ streamingContent }}</div>
@@ -354,7 +398,7 @@ onMounted(async () => {
 
         <div class="agent-composer-wrap">
           <div class="agent-composer-inner">
-            <div class="chat-token-status">
+            <div class="chat-token-status" :class="{ 'is-busy': isSending }">
               <span class="dot" />
               <span>{{ statusText }}</span>
             </div>

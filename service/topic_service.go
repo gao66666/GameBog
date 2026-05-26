@@ -23,7 +23,17 @@ func (s *TopicService) DeleteTemporaryTopic(topicID uint) error {
 	if !t.IsTemporary {
 		return tool.NewBizError(403, 40001, "长期话题不允许删除")
 	}
-	return s.topicRepo.DeleteTopicCascade(topicID)
+	err = s.topicRepo.DeleteTopicCascade(topicID)
+	if err == nil {
+		s.invalidateTopicListCache()
+	}
+	return err
+}
+
+func (s *TopicService) invalidateTopicListCache() {
+	if s != nil && s.topicRedis != nil {
+		_ = s.topicRedis.InvalidateActiveTopicsListCache()
+	}
 }
 
 // ListActiveTopicsPaged 分页获取可用话题
@@ -31,7 +41,23 @@ func (s *TopicService) ListActiveTopicsPaged(page, size int) ([]*models.Topic, i
 	if s == nil || s.topicRepo == nil {
 		return []*models.Topic{}, 0, nil
 	}
-	return s.topicRepo.GetActiveTopicsPaged(time.Now(), page, size)
+	if s.topicRedis != nil {
+		if cached, total, hit, err := s.topicRedis.GetActiveTopicsPaged(page, size); err == nil && hit {
+			return cached, total, nil
+		} else if err != nil {
+			zap.L().Warn("读取话题列表缓存失败，降级查库", zap.Error(err))
+		}
+	}
+	list, total, err := s.topicRepo.GetActiveTopicsPaged(time.Now(), page, size)
+	if err != nil {
+		return nil, 0, err
+	}
+	if s.topicRedis != nil {
+		if err := s.topicRedis.SetActiveTopicsPaged(page, size, list, total); err != nil {
+			zap.L().Warn("写入话题列表缓存失败", zap.Error(err))
+		}
+	}
+	return list, total, nil
 }
 
 const topicCleanupInterval = 1 * time.Minute
@@ -41,10 +67,11 @@ var topicCleanupOnce sync.Once
 type TopicService struct {
 	topicRepo   *database.TopicRepository
 	articleRepo *database.ArticleRepository
+	topicRedis  *database.RedisTopicRepository
 }
 
-func NewTopicService(topicRepo *database.TopicRepository, articleRepo *database.ArticleRepository) *TopicService {
-	s := &TopicService{topicRepo: topicRepo, articleRepo: articleRepo}
+func NewTopicService(topicRepo *database.TopicRepository, articleRepo *database.ArticleRepository, topicRedis *database.RedisTopicRepository) *TopicService {
+	s := &TopicService{topicRepo: topicRepo, articleRepo: articleRepo, topicRedis: topicRedis}
 	s.startCleanupLoop()
 	return s
 }
@@ -104,7 +131,11 @@ func (s *TopicService) CreateTopic(name string, isTemporary bool) (*models.Topic
 	if s == nil || s.topicRepo == nil {
 		return nil, tool.NewBizError(500, 50001, "topic service unavailable")
 	}
-	return s.topicRepo.CreateTopic(name, isTemporary, time.Now())
+	topic, err := s.topicRepo.CreateTopic(name, isTemporary, time.Now())
+	if err == nil {
+		s.invalidateTopicListCache()
+	}
+	return topic, err
 }
 
 func (s *TopicService) ListTopicArticles(topicID uint, page int, size int) ([]*models.Article, int64, error) {
