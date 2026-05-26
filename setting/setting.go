@@ -172,24 +172,6 @@ func loadSecretFromEnv() {
 	if val := os.Getenv("SEARCH_API_KEY"); val != "" {
 		Conf.SearchConfig.APIKey = val
 	}
-	if Conf.MySQLConfig == nil {
-		Conf.MySQLConfig = &MySQLConfig{}
-	}
-	if val := os.Getenv("MYSQL_PASSWORD"); val != "" {
-		Conf.MySQLConfig.Password = val
-	}
-	if Conf.RedisConfig == nil {
-		Conf.RedisConfig = &RedisConfig{}
-	}
-	if val := os.Getenv("REDIS_PASSWORD"); val != "" {
-		Conf.RedisConfig.Password = val
-	}
-	if Conf.AuthConfig == nil {
-		Conf.AuthConfig = &AuthConfig{}
-	}
-	if val := os.Getenv("AUTH_JWT_SECRET"); val != "" {
-		Conf.AuthConfig.JWTSecret = val
-	}
 }
 
 func setDefaults() {
@@ -251,8 +233,9 @@ func setDefaults() {
 	if Conf.AuthConfig.JWTExpireHours <= 0 {
 		Conf.AuthConfig.JWTExpireHours = 24
 	}
-	// JWTSecret 必须通过环境变量 AUTH_JWT_SECRET 提供，不设硬编码默认值
-	// validate() 会在为空时报错
+	if Conf.AuthConfig.JWTSecret == "" {
+		Conf.AuthConfig.JWTSecret = "change-me-in-production"
+	}
 	if Conf.SecurityConfig.RateLimitPerMinute <= 0 {
 		Conf.SecurityConfig.RateLimitPerMinute = 120
 	}

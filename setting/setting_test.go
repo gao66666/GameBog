@@ -1,16 +1,9 @@
 package setting
 
-import (
-	"os"
-	"testing"
-)
+import "testing"
 
 func TestSetDefaults(t *testing.T) {
 	Conf = &AppConfig{}
-	// JWTSecret 必须通过环境变量提供
-	os.Setenv("AUTH_JWT_SECRET", "test-secret")
-	defer os.Unsetenv("AUTH_JWT_SECRET")
-	loadSecretFromEnv()
 	setDefaults()
 
 	if Conf.KafkaConfig == nil || len(Conf.KafkaConfig.Brokers) == 0 || Conf.KafkaConfig.GroupID == "" {

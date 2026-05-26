@@ -9,28 +9,28 @@
 
 llm:
   base_url: "https://api.deepseek.com"
-  api_key: "sk-95bcc2d59e4e46e6ad67fb873c263176"
+  api_key: ""  # 通过环境变量 DEEPSEEK_API_KEY 或 LLM_API_KEY 设置
   model: "deepseek-chat"
   temperature: 0.7
   thinking: false
 
 summary_llm:
   base_url: "https://api.deepseek.com"
-  api_key: "sk-95bcc2d59e4e46e6ad67fb873c263176"
+  api_key: ""  # 同上，不设则继承 llm.api_key
   model: "deepseek-chat"
   temperature: 0
   thinking: false
 
 memory_manager_llm:
   base_url: "https://api.deepseek.com"
-  api_key: "sk-95bcc2d59e4e46e6ad67fb873c263176"
+  api_key: ""  # 同上
   model: "deepseek-chat"
   temperature: 0
   thinking: false
 
 decision_llm:
   base_url: "https://api.deepseek.com"
-  api_key: "sk-95bcc2d59e4e46e6ad67fb873c263176"
+  api_key: ""  # 同上
   model: "deepseek-chat"
   temperature: 0
   thinking: false
@@ -54,7 +54,7 @@ qdrant:
 
 embedding:
   base_url: "https://open.bigmodel.cn/api/paas/v4"
-  api_key: "f59a57e8ebcb4bea8ee442c3c24b30a5.QamrFj5NtR912SKi"
+  api_key: ""  # 通过环境变量 ZHIPU_API_KEY 或 EMBEDDING_API_KEY 设置
   model: "embedding-3"
   dimensions: 1024
 
