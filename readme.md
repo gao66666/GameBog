@@ -2,7 +2,7 @@
 
 基于 **Gin + GORM + Redis + NSQ + Kafka + Elasticsearch** 的社区论坛，含 Vue 前端与 Python AI 助手。
 
-网页链接地址:http://49.235.172.68:8084/agent
+网页链接地址:http://49.235.172.68:8084
 ## 界面预览
 
 |             首页             |                文章详情                |
