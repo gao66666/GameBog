@@ -4,7 +4,6 @@ import { RouterLink, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Delete } from '@element-plus/icons-vue'
 import AppLayout from '@/layouts/AppLayout.vue'
-import PointsLedgerDialog from '@/components/PointsLedgerDialog.vue'
 import { api } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { ensureWSConnected, useWebSocket } from '@/composables/useWebSocket'
@@ -18,9 +17,10 @@ const DEFAULT_COVER =
 
 const activeTab = ref('articles')
 const showSettings = ref(false)
-const showPointsLedger = ref(false)
 const settingsMsg = ref('')
 const dmDot = ref(false)
+const checkedInToday = ref(false)
+const checkinLoading = ref(false)
 
 const profile = reactive({
   email: '',
@@ -31,7 +31,6 @@ const stats = reactive({
   articles: '0',
   follows: '0',
   fans: '0',
-  points: '—',
 })
 
 const settingsForm = reactive({
@@ -198,6 +197,58 @@ async function loadTopics() {
   }
 }
 
+function isToday(iso: string) {
+  if (!iso) return false
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return false
+  const now = new Date()
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  )
+}
+
+async function loadCheckinStatus() {
+  try {
+    const resp = await api<{ list?: Array<Record<string, unknown>> }>(
+      '/api/v1/points/transactions?page=1&size=30',
+    )
+    const list = resp.data?.list ?? []
+    checkedInToday.value = list.some((row) => {
+      const ref = String(row.refType ?? row.ref_type ?? '')
+      const desc = String(row.description ?? '')
+      if (ref !== 'checkin' && !desc.includes('签到')) return false
+      return isToday(String(row.createdAt ?? row.created_at ?? ''))
+    })
+  } catch {
+    checkedInToday.value = false
+  }
+}
+
+async function doCheckin() {
+  if (checkedInToday.value || checkinLoading.value) return
+  checkinLoading.value = true
+  try {
+    const resp = await api<{ balance?: number; message?: string }>('/api/v1/points/checkin', {
+      method: 'POST',
+      data: {},
+    })
+    checkedInToday.value = true
+    ElMessage.success(resp.data?.message || '签到成功')
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e)
+    if (m.includes('已经签到')) {
+      checkedInToday.value = true
+      ElMessage.info(m)
+    } else {
+      ElMessage.error(m || '签到失败')
+    }
+  } finally {
+    checkinLoading.value = false
+  }
+}
+
 async function loadCounts() {
   try {
     const f = await api<{ count?: number }>('/api/v1/follow/users/count')
@@ -211,12 +262,7 @@ async function loadCounts() {
   } catch {
     stats.fans = '0'
   }
-  try {
-    const p = await api<{ balance?: number }>('/api/v1/points/wallet')
-    stats.points = String(p.data?.balance ?? 0)
-  } catch {
-    stats.points = '—'
-  }
+  await loadCheckinStatus()
 }
 
 async function loadDmUnread() {
@@ -306,15 +352,6 @@ onMounted(async () => {
               <div class="me-stat"><span class="me-stat-num">{{ stats.articles }}</span><span class="me-stat-label">文章</span></div>
               <div class="me-stat"><span class="me-stat-num">{{ stats.follows }}</span><span class="me-stat-label">关注</span></div>
               <div class="me-stat"><span class="me-stat-num">{{ stats.fans }}</span><span class="me-stat-label">粉丝</span></div>
-              <button
-                type="button"
-                class="me-stat me-stat--clickable"
-                title="查看积分流水"
-                @click="showPointsLedger = true"
-              >
-                <span class="me-stat-num">{{ stats.points }}</span>
-                <span class="me-stat-label">积分</span>
-              </button>
               <div class="me-stat"><span class="me-stat-num">{{ profile.balance }}</span><span class="me-stat-label">余额</span></div>
             </div>
             <div class="me-actions">
@@ -322,6 +359,14 @@ onMounted(async () => {
                 <RouterLink to="/dm" class="me-action-btn">私信</RouterLink>
               </el-badge>
               <RouterLink to="/points-mall" class="me-action-btn">积分商城</RouterLink>
+              <button
+                type="button"
+                class="me-action-btn"
+                :disabled="checkedInToday || checkinLoading"
+                @click="doCheckin"
+              >
+                {{ checkedInToday ? '已签到' : checkinLoading ? '签到中…' : '签到' }}
+              </button>
               <button type="button" class="me-action-btn" @click="showSettings = true">设置</button>
               <button type="button" class="me-action-btn" @click="logout">退出</button>
             </div>
@@ -416,8 +461,6 @@ onMounted(async () => {
         </main>
       </div>
     </div>
-
-    <PointsLedgerDialog v-model="showPointsLedger" />
 
     <el-dialog v-model="showSettings" title="编辑资料" width="400px">
       <el-form label-position="top">

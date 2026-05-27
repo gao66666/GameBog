@@ -100,8 +100,10 @@ type SearchConfig struct {
 }
 
 type SecurityConfig struct {
-	RateLimitPerMinute int `mapstructure:"rate_limit_per_minute"`
-	RateLimitBurst     int `mapstructure:"rate_limit_burst"`
+	RateLimitPerMinute int    `mapstructure:"rate_limit_per_minute"`
+	RateLimitBurst     int    `mapstructure:"rate_limit_burst"`
+	// AdminAPISecret 非空时，/api/v1/internal/* 须在请求头携带 X-Admin-Key 与之相同。
+	AdminAPISecret string `mapstructure:"admin_api_secret"`
 }
 
 type ObservabilityConfig struct {
@@ -171,6 +173,12 @@ func loadSecretFromEnv() {
 	}
 	if val := os.Getenv("SEARCH_API_KEY"); val != "" {
 		Conf.SearchConfig.APIKey = val
+	}
+	if Conf.SecurityConfig == nil {
+		Conf.SecurityConfig = &SecurityConfig{}
+	}
+	if val := os.Getenv("ADMIN_API_SECRET"); val != "" {
+		Conf.SecurityConfig.AdminAPISecret = val
 	}
 }
 

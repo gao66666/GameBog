@@ -70,7 +70,7 @@ GoBlog 项目的智能对话 Agent，基于大语言模型 + 三层记忆系统 
 | Server 组 | 摘要说明                                                                 |
 | --------- | ------------------------------------------------------------------------ |
 | `public`  | 公开只读：搜索文章、文章详情/排行榜/评论、话题、游戏库、用户公开资料     |
-| `user`    | 用户授权（需 token）：我的资料、我的文章、收藏、关注话题、游戏记录、积分 |
+| `user`    | 用户授权（需 token）：我的资料、我的文章、收藏、关注话题、游戏记录、积分余额/流水/兑换记录 |
 
 路由时的额外处理：
 - 若未传入 `token`，`user` 组不可用
@@ -197,6 +197,9 @@ GoBlog 项目的智能对话 Agent，基于大语言模型 + 三层记忆系统 
 | `me_get_followed_topics` | 我关注的话题 |
 | `me_get_game_plays`      | 我的游戏记录 |
 | `me_get_wallet`          | 我的积分余额 |
+| `me_get_points_transactions` | 积分流水（分页） |
+| `me_get_mall_orders`     | 积分商城兑换记录 |
+| `me_get_game_orders`     | 游戏库购买记录 |
 
 ### MCP Stdio Server（`mcp_server.py`）
 

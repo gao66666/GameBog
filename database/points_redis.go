@@ -2,11 +2,24 @@ package database
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
+
+const pointsWalletCacheTTL = 2 * time.Hour
+
+type cachedPointsWallet struct {
+	Balance       int64 `json:"balance"`
+	FrozenBalance int64 `json:"frozen_balance"`
+}
+
+func pointsWalletKey(userID uint64) string {
+	return fmt.Sprintf("points:wallet:%d", userID)
+}
 
 // RedisPointsRepository 积分相关 Redis 操作（每日上限、签到）
 type RedisPointsRepository struct {
@@ -146,6 +159,48 @@ func (r *RedisPointsRepository) HasCheckedIn(userID uint64) (bool, error) {
 		return false, err
 	}
 	return bit == 1, nil
+}
+
+// SetWalletBalance 将 MySQL 中的积分余额写入 Redis（积分商城展示用）。
+func (r *RedisPointsRepository) SetWalletBalance(userID uint64, balance, frozenBalance int64) error {
+	if r == nil || r.client == nil || userID == 0 {
+		return nil
+	}
+	body, err := json.Marshal(cachedPointsWallet{Balance: balance, FrozenBalance: frozenBalance})
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	return r.client.Set(ctx, pointsWalletKey(userID), body, pointsWalletCacheTTL).Err()
+}
+
+// GetWalletBalance 从 Redis 读取积分余额缓存。
+func (r *RedisPointsRepository) GetWalletBalance(userID uint64) (balance, frozenBalance int64, ok bool, err error) {
+	if r == nil || r.client == nil || userID == 0 {
+		return 0, 0, false, nil
+	}
+	ctx := context.Background()
+	val, err := r.client.Get(ctx, pointsWalletKey(userID)).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return 0, 0, false, nil
+		}
+		return 0, 0, false, err
+	}
+	var w cachedPointsWallet
+	if err := json.Unmarshal([]byte(val), &w); err != nil {
+		return 0, 0, false, err
+	}
+	return w.Balance, w.FrozenBalance, true, nil
+}
+
+// DelWalletBalance 删除积分余额缓存（入账后可选失效，由下次 warm 刷新）。
+func (r *RedisPointsRepository) DelWalletBalance(userID uint64) error {
+	if r == nil || r.client == nil || userID == 0 {
+		return nil
+	}
+	ctx := context.Background()
+	return r.client.Del(ctx, pointsWalletKey(userID)).Err()
 }
 
 // GetCheckinCount 获取年签到天数

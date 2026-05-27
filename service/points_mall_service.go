@@ -14,17 +14,20 @@ type PointsMallService struct {
 	mallDB    *database.PointsMallRepository
 	mallRedis *database.RedisPointsMallRepository
 	pointsDB  *database.PointsRepository
+	pointsRedis *database.RedisPointsRepository
 }
 
 func NewPointsMallService(
 	mallDB *database.PointsMallRepository,
 	mallRedis *database.RedisPointsMallRepository,
 	pointsDB *database.PointsRepository,
+	pointsRedis *database.RedisPointsRepository,
 ) *PointsMallService {
 	return &PointsMallService{
-		mallDB:    mallDB,
-		mallRedis: mallRedis,
-		pointsDB:  pointsDB,
+		mallDB:      mallDB,
+		mallRedis:   mallRedis,
+		pointsDB:    pointsDB,
+		pointsRedis: pointsRedis,
 	}
 }
 
@@ -189,6 +192,13 @@ func (s *PointsMallService) Redeem(userID, productID uint64, idempotencyKey stri
 	// 校正 Redis 与库内可用码数量（防止长期漂移）
 	if n, cntErr := s.mallDB.CountAvailableCodes(productID); cntErr == nil {
 		_ = s.mallRedis.SetStock(productID, n)
+	}
+
+	// 兑换后刷新 Redis 中的积分余额
+	if s.pointsRedis != nil && s.pointsDB != nil {
+		if wallet, werr := s.pointsDB.GetWallet(userID); werr == nil {
+			_ = s.pointsRedis.SetWalletBalance(userID, wallet.Balance, wallet.FrozenBalance)
+		}
 	}
 
 	return order, nil

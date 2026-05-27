@@ -61,9 +61,10 @@ export function normalizeGithubURL(raw: string) {
 }
 
 export function gamePriceLabel(g: Record<string, unknown>) {
-  const pc = Number(g.priceCents ?? g.price_cents ?? -1)
-  if (!Number.isFinite(pc) || pc < 0) return '价格待定'
-  if (pc === 0) return '免费'
+  const raw = g.priceCents ?? g.price_cents
+  if (raw === undefined || raw === null || raw === '') return '免费'
+  const pc = Number(raw)
+  if (!Number.isFinite(pc) || pc <= 0) return '免费'
   const yuan = pc / 100
   if (Math.abs(yuan - Math.round(yuan)) < 1e-6) return '¥' + Math.round(yuan)
   return '¥' + yuan.toFixed(2)

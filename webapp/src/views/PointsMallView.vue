@@ -39,7 +39,7 @@ const showPointsLedger = ref(false)
 
 async function loadWallet() {
   try {
-    const resp = await api<{ balance?: number }>('/api/v1/points/wallet')
+    const resp = await api<{ balance?: number }>('/api/v1/points/wallet?warm_redis=1')
     walletBalance.value = Number(resp.data?.balance ?? 0)
   } catch {
     walletBalance.value = 0

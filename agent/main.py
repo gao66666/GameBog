@@ -36,7 +36,11 @@ from core.rag import rewrite_query
 from core.token_usage import get_turn_usage_tracker, reset_turn_usage_tracker
 from infra.config import get_prompts, load_config
 from infra.agent_log import get_logger
-from memory.memory_manager import init_memory_services, ingest_document_chunk
+from memory.memory_manager import (
+    init_memory_services,
+    ingest_document_chunk,
+    ingest_markdown_document,
+)
 from memory.memory_store import (
     clear_session,
     clear_short_messages,
@@ -104,6 +108,26 @@ class DocumentIngestRequest(BaseModel):
     game_name: str | None = None
     section_path: list[str] | None = None
     preview: str | None = Field(None, description="可选；默认取 content 前 240 字")
+
+
+class MarkdownIngestRequest(BaseModel):
+    """整篇 Markdown 分片后写入公共 Qdrant 知识库。"""
+
+    article_id: str = Field(..., min_length=1, description="文档唯一 ID，如 wiki:genshin")
+    markdown: str = Field(..., min_length=1)
+    content_revision: int = Field(1, ge=1)
+    source: str = Field("backstage", min_length=1)
+    game_name: str | None = None
+    chunk_size: int = Field(900, ge=200)
+    chunk_overlap: int = Field(80, ge=0)
+    section_order: list[str] | None = None
+
+
+def _verify_document_ingest_key(x_ingest_key: str | None) -> None:
+    cfg = load_config()
+    secret = (cfg.get("document_ingest_secret") or "").strip()
+    if secret and (not x_ingest_key or x_ingest_key.strip() != secret):
+        raise HTTPException(status_code=401, detail="invalid or missing X-Ingest-Key")
 
 
 @app.get("/health")
@@ -453,10 +477,7 @@ async def memory_ingest_document(
     x_ingest_key: str | None = Header(None, alias="X-Ingest-Key"),
 ):
     """将 Wiki/百科等文档块写入 Qdrant（memory_scope=document）。配置 document_ingest_secret 非空时需校验 X-Ingest-Key。"""
-    cfg = load_config()
-    secret = (cfg.get("document_ingest_secret") or "").strip()
-    if secret and (not x_ingest_key or x_ingest_key.strip() != secret):
-        raise HTTPException(status_code=401, detail="invalid or missing X-Ingest-Key")
+    _verify_document_ingest_key(x_ingest_key)
 
     try:
         result = await ingest_document_chunk(
@@ -469,6 +490,33 @@ async def memory_ingest_document(
             game_name=req.game_name,
             section_path=req.section_path,
             preview=req.preview,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    return {"status": "ok", **result}
+
+
+@app.post("/memory/ingest-markdown")
+async def memory_ingest_markdown(
+    req: MarkdownIngestRequest,
+    x_ingest_key: str | None = Header(None, alias="X-Ingest-Key"),
+):
+    """将整篇 Markdown 按标题分节后写入公共 Qdrant 知识库。"""
+    _verify_document_ingest_key(x_ingest_key)
+
+    try:
+        result = await ingest_markdown_document(
+            req.article_id,
+            req.markdown,
+            content_revision=req.content_revision,
+            source=req.source,
+            game_name=req.game_name,
+            chunk_size=req.chunk_size,
+            chunk_overlap=req.chunk_overlap,
+            section_order=req.section_order,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

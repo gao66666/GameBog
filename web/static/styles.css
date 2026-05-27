@@ -144,6 +144,58 @@ a:hover {
     font-weight: inherit;
 }
 
+/* 话题广场：话题名称链接黑色 */
+.page-topics .topic-card-title,
+.page-topics a.topic-card-title {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.page-topics .container {
+    max-width: 1100px;
+}
+
+.topics-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+}
+
+.page-topics .topic-card {
+    margin-bottom: 0;
+    padding: 16px 18px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--card);
+    transition: border-color 0.15s, box-shadow 0.15s;
+    min-height: 76px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.page-topics .topic-card:hover {
+    border-color: #d2d2d7;
+    box-shadow: var(--shadow-sm);
+}
+
+.page-topics .topic-card-meta {
+    font-size: 12px;
+    margin-top: 6px;
+}
+
+@media (max-width: 900px) {
+    .topics-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 560px) {
+    .topics-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* 文章详情页：左侧目录（TOC） */
 .article-shell {
     display: flex;

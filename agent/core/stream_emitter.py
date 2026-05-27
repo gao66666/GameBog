@@ -29,6 +29,8 @@ _LIST_COUNT_KEYS = (
     "discussions",
     "discussion_list",
     "game_plays",
+    "orders",
+    "transactions",
 )
 
 

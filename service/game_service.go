@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"time"
 
@@ -12,16 +13,38 @@ import (
 	"gorm.io/gorm"
 )
 
+// GameDetailVO 游戏详情（含库存与是否已购）。
+type GameDetailVO struct {
+	Game      *models.Game `json:"game"`
+	Stock     int64        `json:"stock"`
+	Owned     bool         `json:"owned"`
+	Free      bool         `json:"free"`
+}
+
 type GameService struct {
 	gameRepo  *database.GameRepository
+	gameStore *database.GameStoreRepository
 	gameRedis *database.RedisGameRepository
 	topicRepo *database.TopicRepository
+	userRepo  *database.UserRepository
 }
 
 var errGameInvalidParam = tool.NewBizError(400, 40001, "不正确的参数")
 
-func NewGameService(gameRepo *database.GameRepository, gameRedis *database.RedisGameRepository, topicRepo *database.TopicRepository) *GameService {
-	return &GameService{gameRepo: gameRepo, gameRedis: gameRedis, topicRepo: topicRepo}
+func NewGameService(
+	gameRepo *database.GameRepository,
+	gameStore *database.GameStoreRepository,
+	gameRedis *database.RedisGameRepository,
+	topicRepo *database.TopicRepository,
+	userRepo *database.UserRepository,
+) *GameService {
+	return &GameService{
+		gameRepo:  gameRepo,
+		gameStore: gameStore,
+		gameRedis: gameRedis,
+		topicRepo: topicRepo,
+		userRepo:  userRepo,
+	}
 }
 
 func (s *GameService) CreateGame(game *models.Game) error {
@@ -35,18 +58,38 @@ func (s *GameService) CreateGame(game *models.Game) error {
 	if err := s.gameRepo.CreateGame(game); err != nil {
 		return err
 	}
-	if s.topicRepo != nil {
-		if _, err := s.topicRepo.EnsureGameTopic(game.ID, game.Name); err != nil {
-			return err
-		}
-		if s.gameRedis != nil {
-			_ = s.gameRedis.DeleteGameTopicMap(game.ID)
-		}
+	if _, err := s.ensureGameTopicAfterCreate(game.ID, game.Name); err != nil {
+		return err
 	}
 	if s.gameRedis != nil {
 		_ = s.gameRedis.InvalidateGamesListCache()
 	}
 	return nil
+}
+
+// CreateGameWithTopic 创建游戏并绑定「游戏:名称」话题，返回话题 ID。
+func (s *GameService) CreateGameWithTopic(game *models.Game) (uint, error) {
+	if err := s.CreateGame(game); err != nil {
+		return 0, err
+	}
+	if s.topicRepo == nil {
+		return 0, nil
+	}
+	return s.topicRepo.GetTopicIDByGameID(game.ID)
+}
+
+func (s *GameService) ensureGameTopicAfterCreate(gameID uint64, gameName string) (uint, error) {
+	if s.topicRepo == nil || gameID == 0 {
+		return 0, nil
+	}
+	topicID, err := s.topicRepo.EnsureGameTopic(gameID, gameName)
+	if err != nil {
+		return 0, err
+	}
+	if s.gameRedis != nil {
+		_ = s.gameRedis.DeleteGameTopicMap(gameID)
+	}
+	return topicID, nil
 }
 
 func (s *GameService) UpdateGame(game *models.Game) error {
@@ -415,4 +458,67 @@ func IsNotFound(err error) bool {
 
 func NewNotFoundError(msg string) error {
 	return tool.NewBizError(404, 40001, msg)
+}
+
+func (s *GameService) StockForGame(gameID uint64, priceCents int64) (int64, error) {
+	if s.gameStore == nil {
+		return 0, nil
+	}
+	if models.IsFreeGame(priceCents) {
+		return -1, nil // 免费不限库存
+	}
+	return s.gameStore.CountAvailableLicenses(gameID)
+}
+
+func (s *GameService) GetGameDetailForUser(gameID, userID uint64) (*GameDetailVO, error) {
+	game, err := s.GetGameByID(gameID)
+	if err != nil {
+		return nil, err
+	}
+	stock, err := s.StockForGame(game.ID, game.PriceCents)
+	if err != nil {
+		return nil, err
+	}
+	return &GameDetailVO{
+		Game:  game,
+		Stock: stock,
+		Owned: false,
+		Free:  models.IsFreeGame(game.PriceCents),
+	}, nil
+}
+
+func (s *GameService) PurchaseGame(userID, gameID uint64, idempotencyKey string) (*models.GameOrder, error) {
+	if s.gameStore == nil || s.userRepo == nil {
+		return nil, errGameInvalidParam
+	}
+	game, err := s.GetGameByID(gameID)
+	if err != nil {
+		return nil, err
+	}
+	orderID := tool.GenerateID()
+	if idempotencyKey != "" {
+		// 稳定 order_id 便于幂等重试
+		orderID = tool.PointsStableTxnID(userID, "game_purchase_idem", gameID, hashIdem(idempotencyKey))
+	}
+	order, err := s.gameStore.PurchaseInTx(s.userRepo, game, userID, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if s.gameRedis != nil {
+		_ = s.gameRedis.DeleteUserGamePlayList(userID)
+	}
+	return order, nil
+}
+
+func (s *GameService) ListMyGameOrders(userID uint64) ([]models.GameOrder, error) {
+	if s.gameStore == nil {
+		return []models.GameOrder{}, nil
+	}
+	return s.gameStore.ListOrdersByUser(userID, 50)
+}
+
+func hashIdem(s string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(s))
+	return h.Sum64()
 }

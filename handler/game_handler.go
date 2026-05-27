@@ -155,7 +155,8 @@ func (h *GameHandler) GetGame(c *gin.Context) {
 		tool.ResponseError(c, ErrCodeInvalidParam)
 		return
 	}
-	game, err := h.se.GetGameByID(gameID)
+	userID := AuthUserID(c)
+	detail, err := h.se.GetGameDetailForUser(gameID, userID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			tool.ResponseErrorWithMsg(c, "游戏不存在")
@@ -164,7 +165,12 @@ func (h *GameHandler) GetGame(c *gin.Context) {
 		tool.ResponseError(c, err)
 		return
 	}
-	tool.ResponseSuccess(c, gin.H{"game": game}, "查询成功")
+	tool.ResponseSuccess(c, gin.H{
+		"game":  detail.Game,
+		"stock": detail.Stock,
+		"owned": detail.Owned,
+		"free":  detail.Free,
+	}, "查询成功")
 }
 
 func (h *GameHandler) ListGames(c *gin.Context) {
@@ -175,7 +181,77 @@ func (h *GameHandler) ListGames(c *gin.Context) {
 		tool.ResponseError(c, err)
 		return
 	}
-	tool.ResponseSuccess(c, gin.H{"list": list, "total": total}, "查询成功")
+	rows := make([]gin.H, 0, len(list))
+	for _, g := range list {
+		if g == nil {
+			continue
+		}
+		stock, _ := h.se.StockForGame(g.ID, g.PriceCents)
+		rows = append(rows, gin.H{
+			"id":           strconv.FormatUint(g.ID, 10),
+			"name":         g.Name,
+			"description":  g.Description,
+			"publisher":    g.Publisher,
+			"developer":    g.Developer,
+			"coverUrl":     g.CoverURL,
+			"cover_url":    g.CoverURL,
+			"priceCents":   g.PriceCents,
+			"price_cents":  g.PriceCents,
+			"free":         models.IsFreeGame(g.PriceCents),
+			"stock":        stock,
+			"tags":         g.Tags,
+			"releaseAt":    g.ReleaseAt,
+			"release_at":   g.ReleaseAt,
+		})
+	}
+	tool.ResponseSuccess(c, gin.H{"list": rows, "total": total}, "查询成功")
+}
+
+func (h *GameHandler) PurchaseGame(c *gin.Context) {
+	userID := AuthUserID(c)
+	if userID == 0 {
+		tool.ResponseError(c, ErrInvalidToken)
+		return
+	}
+	gameID, ok := parseUint64Param(c.Param("id"))
+	if !ok {
+		tool.ResponseError(c, ErrCodeInvalidParam)
+		return
+	}
+	var req struct {
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	idem := strings.TrimSpace(req.IdempotencyKey)
+	if idem == "" {
+		idem = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	}
+	order, err := h.se.PurchaseGame(userID, gameID, idem)
+	if err != nil {
+		tool.ResponseError(c, err)
+		return
+	}
+	tool.ResponseSuccess(c, gin.H{
+		"order":           order,
+		"activation_code": order.Code,
+	}, "购买成功")
+}
+
+func (h *GameHandler) ListMyGameOrders(c *gin.Context) {
+	userID := AuthUserID(c)
+	if userID == 0 {
+		tool.ResponseError(c, ErrInvalidToken)
+		return
+	}
+	list, err := h.se.ListMyGameOrders(userID)
+	if err != nil {
+		tool.ResponseError(c, err)
+		return
+	}
+	if list == nil {
+		list = []models.GameOrder{}
+	}
+	tool.ResponseSuccess(c, gin.H{"orders": list}, "ok")
 }
 
 func (h *GameHandler) SearchGames(c *gin.Context) {

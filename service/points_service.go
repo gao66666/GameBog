@@ -176,6 +176,47 @@ func (s *PointsService) GetWallet(userID uint64) (*models.UserWallet, error) {
 	return s.pointsDB.GetWallet(userID)
 }
 
+// GetWalletFromDB 强制从 MySQL 读取积分余额。
+func (s *PointsService) GetWalletFromDB(userID uint64) (*models.UserWallet, error) {
+	return s.EnsureWallet(userID)
+}
+
+// WarmWalletRedisFromDB 从 MySQL 加载积分并写入 Redis（积分商城入口）。
+func (s *PointsService) WarmWalletRedisFromDB(userID uint64) (*models.UserWallet, error) {
+	wallet, err := s.EnsureWallet(userID)
+	if err != nil {
+		return nil, err
+	}
+	if s.pointsRedis != nil {
+		if err := s.pointsRedis.SetWalletBalance(userID, wallet.Balance, wallet.FrozenBalance); err != nil {
+			return nil, err
+		}
+	}
+	return wallet, nil
+}
+
+// GetWalletFromRedis 读取 Redis 中的积分余额；未命中返回 nil。
+func (s *PointsService) GetWalletFromRedis(userID uint64) (*models.UserWallet, bool, error) {
+	if s.pointsRedis == nil || userID == 0 {
+		return nil, false, nil
+	}
+	bal, fr, ok, err := s.pointsRedis.GetWalletBalance(userID)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return &models.UserWallet{
+		UserID:        userID,
+		Balance:       bal,
+		FrozenBalance: fr,
+	}, true, nil
+}
+
+// RefreshWalletRedisFromDB 事务落库后刷新 Redis 缓存（兑换、签到等）。
+func (s *PointsService) RefreshWalletRedisFromDB(userID uint64) error {
+	_, err := s.WarmWalletRedisFromDB(userID)
+	return err
+}
+
 // ListMyTransactions 按用户 ID 查询 points_transactions 流水（分页）。
 func (s *PointsService) ListMyTransactions(userID uint64, page, size int) ([]models.PointsTransaction, int64, error) {
 	return s.pointsDB.ListTransactionsByUser(userID, page, size)

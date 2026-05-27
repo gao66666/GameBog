@@ -582,6 +582,63 @@
       "end_ok_template": "{{label}}：已获取",
       "end_fail_template": "{{label}}：未能获取到相关信息"
     },
+    "me_get_mall_orders": {
+      "label": "我的兑换记录",
+      "group": "user",
+      "description": "获取我在积分商城的兑换订单列表。返回 order_id、product_name、points_spent（消耗积分）、code（激活码）、created_at。用于「我兑换过什么」「我的激活码」。",
+      "auth": true,
+      "arg_keys": [],
+      "input_schema": { "type": "object", "properties": {} },
+      "call": { "method": "get_my_mall_orders", "kwargs": {}, "pass_token": true },
+      "response_preset": "me_mall_orders",
+      "error_prefix": "获取兑换记录失败",
+      "start_template": "正在查询{{label}}",
+      "end_ok_template": "{{label}}：找到 {{row_count}} 条",
+      "end_fail_template": "{{label}}：未能获取到相关信息"
+    },
+    "me_get_game_orders": {
+      "label": "我的游戏购买记录",
+      "group": "user",
+      "description": "获取我在游戏库的购买订单列表。返回 game_name、price_display（人民币）、code（激活码）、created_at。用于「我买过的游戏」「游戏购买流水」「我的激活码」。与积分商城兑换记录（me_get_mall_orders）不同。",
+      "auth": true,
+      "arg_keys": [],
+      "input_schema": { "type": "object", "properties": {} },
+      "call": { "method": "get_my_game_orders", "kwargs": {}, "pass_token": true },
+      "response_preset": "me_game_orders",
+      "error_prefix": "获取游戏购买记录失败",
+      "start_template": "正在查询{{label}}",
+      "end_ok_template": "{{label}}：找到 {{row_count}} 条",
+      "end_fail_template": "{{label}}：未能获取到相关信息"
+    },
+    "me_get_points_transactions": {
+      "label": "我的积分流水",
+      "group": "user",
+      "description": "获取我的积分变动流水（分页）。返回 amount（正为收入、负为支出）、description、balance_after、ref_type、created_at。含签到/发文/点赞奖励与积分商城兑换扣款等。用于「积分怎么来的」「积分流水」「最近扣了多少积分」。",
+      "auth": true,
+      "arg_keys": ["page"],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page": { "type": "integer", "description": "页码，默认 1", "x-contract": "page" },
+          "size": { "type": "integer", "description": "每页条数，默认 20，最大 100", "x-contract": "page_size" }
+        }
+      },
+      "validators": [
+        { "field": "page", "rule": "page" },
+        { "field": "size", "rule": "page_size" }
+      ],
+      "call": {
+        "method": "get_my_points_transactions",
+        "kwargs": { "page": "{{page}}", "size": "{{size}}" },
+        "defaults": { "page": 1, "size": 20 },
+        "pass_token": true
+      },
+      "response_preset": "me_points_transactions",
+      "error_prefix": "获取积分流水失败",
+      "start_template": "正在查询{{label}}",
+      "end_ok_template": "{{label}}：找到 {{row_count}} 条",
+      "end_fail_template": "{{label}}：未能获取到相关信息"
+    },
     "get_current_time": {
       "label": "当前时间",
       "group": "general",

@@ -114,14 +114,14 @@ def _truncate_fields(obj: dict, limits: dict[str, int]) -> dict:
 
 
 def _format_price_cents(cents: Any) -> str:
-    """与 models.Game.PriceCents 语义一致：-1 未设置，0 免费，>0 为分。"""
+    """与 models.Game.PriceCents 语义一致：<=0 或空为免费，>0 为分。"""
+    if cents is None or cents == "":
+        return "免费"
     try:
         c = int(cents)
     except (TypeError, ValueError):
-        return "未知"
-    if c < 0:
-        return "未设置"
-    if c == 0:
+        return "免费"
+    if c <= 0:
         return "免费"
     yuan = c / 100.0
     if c % 100 == 0:
@@ -469,6 +469,67 @@ def _apply_response_preset(preset: str, data: dict, arguments: dict[str, Any]) -
         }
     if preset == "me_wallet":
         return {"points": data.get("points") or data.get("balance") or 0}
+    if preset == "me_mall_orders":
+        orders = _first_list(data, "orders", "order_list")
+        return {
+            "orders": [
+                {
+                    "order_id": o.get("orderId") or o.get("order_id"),
+                    "product_id": o.get("productId") or o.get("product_id"),
+                    "product_name": o.get("productName") or o.get("product_name", ""),
+                    "points_spent": o.get("pointsSpent") or o.get("points_spent", 0),
+                    "code": o.get("code", ""),
+                    "created_at": str(o.get("createdAt") or o.get("created_at", "")),
+                }
+                for o in orders
+            ],
+            "total": len(orders),
+        }
+    if preset == "me_game_orders":
+        orders = _first_list(data, "orders", "order_list")
+        rows = []
+        for o in orders:
+            pc = o.get("priceCents") if o.get("priceCents") is not None else o.get("price_cents", 0)
+            try:
+                cents = int(pc)
+            except (TypeError, ValueError):
+                cents = 0
+            rows.append(
+                {
+                    "order_id": o.get("orderId") or o.get("order_id"),
+                    "game_id": o.get("gameId") or o.get("game_id"),
+                    "game_name": o.get("gameName") or o.get("game_name", ""),
+                    "price_cents": cents,
+                    "price_display": _format_price_cents(cents),
+                    "code": o.get("code", ""),
+                    "created_at": str(o.get("createdAt") or o.get("created_at", "")),
+                }
+            )
+        return {"orders": rows, "total": len(rows)}
+    if preset == "me_points_transactions":
+        items = _first_list(data, "list", "transactions", "transaction_list")
+        page = data.get("page", arguments.get("page", 1))
+        size = data.get("size", arguments.get("size", 20))
+        total = data.get("total")
+        if total is None:
+            total = len(items)
+        return {
+            "transactions": [
+                {
+                    "txn_id": t.get("txnId") or t.get("txn_id"),
+                    "amount": t.get("amount", 0),
+                    "type": t.get("type", ""),
+                    "description": t.get("description", ""),
+                    "balance_after": t.get("balanceAfter") or t.get("balance_after", 0),
+                    "ref_type": t.get("refType") or t.get("ref_type", ""),
+                    "created_at": str(t.get("createdAt") or t.get("created_at", "")),
+                }
+                for t in items
+            ],
+            "total": total,
+            "page": page,
+            "size": size,
+        }
     if preset == "passthrough":
         return data
     raise ValueError(f"未知 response_preset: {preset}")

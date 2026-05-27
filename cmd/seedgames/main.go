@@ -51,12 +51,17 @@ func main() {
 	db := database.MysqlInit(setting.Conf.MySQLConfig)
 
 	gameRepo := database.NewGameRepository(db)
+	gameStoreRepo := database.NewGameStoreRepository(db)
 	gameRedis := database.NewRedisGameRepository(rdb)
 	topicRepo := database.NewTopicRepository(db)
-	svc := service.NewGameService(gameRepo, gameRedis, topicRepo)
+	userRepo := database.NewUserRepository(db)
+	svc := service.NewGameService(gameRepo, gameStoreRepo, gameRedis, topicRepo, userRepo)
 
 	if err := gameRepo.InitTable(); err != nil {
 		zap.L().Warn("InitTable", zap.Error(err))
+	}
+	if err := gameStoreRepo.InitTable(); err != nil {
+		zap.L().Warn("game store InitTable", zap.Error(err))
 	}
 
 	f, err := os.Open(*seedFile)

@@ -48,6 +48,7 @@ type App struct {
 	PointsMallHandler        *handler.PointsMallHandler
 	PointsSvc                *service.PointsService
 	AgentHandler             *handler.AgentHandler
+	InternalHandler          *handler.InternalHandler
 	ChannelHub               *channel.Hub
 }
 
@@ -89,6 +90,7 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	topicRepo := database.NewTopicRepository(db)
 	topicRedis := database.NewRedisTopicRepository(rdb)
 	gameRepo := database.NewGameRepository(db)
+	gameStoreRepo := database.NewGameStoreRepository(db)
 	gameRedis := database.NewRedisGameRepository(rdb)
 
 	pointsRepo := database.NewPointsRepository(db)
@@ -98,7 +100,7 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 
 	mallRepo := database.NewPointsMallRepository(db)
 	mallRedis := database.NewRedisPointsMallRepository(rdb)
-	mallSvc := service.NewPointsMallService(mallRepo, mallRedis, pointsRepo)
+	mallSvc := service.NewPointsMallService(mallRepo, mallRedis, pointsRepo, pointsRedis)
 	mallHandler := handler.NewPointsMallHandler(mallSvc)
 
 	if err := userRepo.InitTable(); err != nil {
@@ -125,6 +127,9 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	if err := gameRepo.InitTable(); err != nil {
 		zap.L().Warn("游戏相关表初始化失败", zap.Error(err))
 	}
+	if err := gameStoreRepo.InitTable(); err != nil {
+		zap.L().Warn("游戏库库存表初始化失败", zap.Error(err))
+	}
 	if err := pointsRepo.InitTable(); err != nil {
 		zap.L().Warn("积分表初始化失败", zap.Error(err))
 	}
@@ -139,7 +144,7 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	articleSvc := service.NewArticleService(articleRepo, userRepo, commentRepo, followRepo, articleRedis, topicRepo, gameRepo, pointsSvc, userSvc)
 	dmSvc := service.NewDMService(dmRepo, userRepo, dmRedis)
 	topicSvc := service.NewTopicService(topicRepo, articleRepo, topicRedis)
-	gameSvc := service.NewGameService(gameRepo, gameRedis, topicRepo)
+	gameSvc := service.NewGameService(gameRepo, gameStoreRepo, gameRedis, topicRepo, userRepo)
 	searchRedis := database.NewRedisSearchRepository(rdb)
 	searchSvc := service.NewSearchService(articleRepo, userRepo, commentRepo, searchRedis)
 
@@ -175,6 +180,7 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 		PointsMallHandler:        mallHandler,
 		PointsSvc:                pointsSvc,
 		AgentHandler:             agentHandler,
+		InternalHandler:          handler.NewInternalHandler(gameSvc, topicSvc),
 		ChannelHub:               channelHub,
 	}
 }
@@ -242,6 +248,7 @@ func RouterInit(mode string, app *App) *gin.Engine {
 	v1 := r.Group("/api/v1")
 	registerPublicRoutes(v1, app)
 	registerProtectedRoutes(v1, app)
+	registerInternalRoutes(v1, app)
 
 	// 保留旧前缀，减少升级冲击
 	legacyV1 := r.Group("/v1")
@@ -276,6 +283,8 @@ func registerPublicRoutes(g *gin.RouterGroup, app *App) {
 	g.GET("/games/:id", app.GameHandler.GetGame)
 	g.GET("/games", app.GameHandler.ListGames)
 	g.GET("/games/:id/reviews", app.GameHandler.ListReviews)
+
+	// 游戏库公开列表/详情（详情含库存；已登录时含 owned）
 	g.GET("/game-reviews/:id", app.GameHandler.GetReview)
 	g.GET("/game-reviews/:id/comments", app.GameHandler.ListReviewComments)
 	g.GET("/users/:id/points", app.PointsHandler.GetUserWallet)
@@ -286,6 +295,20 @@ func registerPublicRoutes(g *gin.RouterGroup, app *App) {
 
 	if app.ChannelHub != nil {
 		app.ChannelHub.MountRoutes(g)
+	}
+}
+
+// registerInternalRoutes 后台运维 API：X-Admin-Key，不经 JWT，前端不调用。
+func registerInternalRoutes(g *gin.RouterGroup, app *App) {
+	if app.InternalHandler == nil {
+		return
+	}
+	internal := g.Group("/internal")
+	internal.Use(middleware.AdminAPIKey())
+	{
+		internal.POST("/games", app.InternalHandler.CreateGameInternal)
+		internal.POST("/topics", app.InternalHandler.CreateTopicInternal)
+		internal.POST("/kb/markdown", app.InternalHandler.IngestKBMarkdown)
 	}
 }
 
@@ -339,6 +362,10 @@ func registerProtectedRoutes(g *gin.RouterGroup, app *App) {
 		authGroup.POST("/game-reviews/:id/comments", app.GameHandler.CreateReviewComment)
 		authGroup.PUT("/game-review-comments/:id", app.GameHandler.UpdateReviewComment)
 		authGroup.DELETE("/game-review-comments/:id", app.GameHandler.DeleteReviewComment)
+
+		// 游戏库购买（纯 MySQL 事务：库存 + 扣款 + 流水 + 订单）
+		authGroup.POST("/games/:id/purchase", app.GameHandler.PurchaseGame)
+		authGroup.GET("/games/orders", app.GameHandler.ListMyGameOrders)
 
 		// 游戏游玩记录
 		authGroup.POST("/games/play", app.GameHandler.UpsertMyGamePlay)

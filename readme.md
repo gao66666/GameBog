@@ -114,6 +114,18 @@ docker compose --profile app up -d --build
 
 API 前缀 `/api/v1`，鉴权头 `Authorization: Bearer <token>`。
 
+### 后台内部 API（不经前端）
+
+配置 `ADMIN_API_SECRET`（或 `security.admin_api_secret`），请求头 `X-Admin-Key: <secret>`：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/internal/games` | 上新游戏，自动创建并绑定「游戏:名称」话题；返回 `game_id`、`topic_id` |
+| POST | `/api/v1/internal/topics` | 创建长期话题；body `{ "name": "话题名" }` |
+| POST | `/api/v1/internal/kb/markdown` | 将 Markdown 分片写入公共 Qdrant（代理 Agent）；需 `AGENT_URL`，建议同时配置 `DOCUMENT_INGEST_SECRET` |
+
+`kb/markdown` body 示例：`article_id`、`markdown`、可选 `game_name`、`source`、`content_revision`、`chunk_size`。
+
 ## AI 智能助手
 
 项目包含一个完整的 Python AI 助手（`agent/`），基于大语言模型 + 三层记忆系统 + MCP 工具集，为博客用户提供自然语言交互体验。

@@ -66,7 +66,10 @@ onMounted(load)
             style="text-decoration: none; color: inherit; border: 1px solid #eee; border-radius: 12px; overflow: hidden"
           >
             <img :src="gameCoverUrl(g)" alt="" style="width: 100%; height: 100px; object-fit: cover" loading="lazy" />
-            <div style="padding: 10px; font-size: 14px; font-weight: 600">{{ g.name }}</div>
+            <div style="padding: 10px">
+              <div style="font-size: 14px; font-weight: 600">{{ g.name }}</div>
+              <div style="margin-top: 4px; font-size: 12px; color: #0071e3">{{ gamePriceLabel(g) }}</div>
+            </div>
           </RouterLink>
         </div>
       </section>

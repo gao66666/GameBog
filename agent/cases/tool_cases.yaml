@@ -216,6 +216,36 @@ cases:
       tools_must_include: [me_get_wallet]
       max_tool_calls: 3
 
+  - id: tool_me_mall_orders
+    name: 登录-兑换记录
+    message: "我在积分商城兑换过哪些东西"
+    require_token: true
+    expect:
+      status: ok
+      servers_must_include: [user]
+      tools_must_include: [me_get_mall_orders]
+      max_tool_calls: 3
+
+  - id: tool_me_points_transactions
+    name: 登录-积分流水
+    message: "我最近积分是怎么变动的"
+    require_token: true
+    expect:
+      status: ok
+      servers_must_include: [user]
+      tools_must_include: [me_get_points_transactions]
+      max_tool_calls: 3
+
+  - id: tool_me_game_orders
+    name: 登录-游戏购买记录
+    message: "我在游戏库买过哪些游戏"
+    require_token: true
+    expect:
+      status: ok
+      servers_must_include: [user]
+      tools_must_include: [me_get_game_orders]
+      max_tool_calls: 3
+
   - id: tool_me_profile
     name: 登录-我的资料
     message: "我的个人资料是什么"

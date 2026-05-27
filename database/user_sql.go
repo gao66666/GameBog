@@ -58,6 +58,16 @@ func (r *UserRepository) GetUserByID(userid uint64) (*models.User, error) {
 	return &user, nil
 }
 
+// GetUserForUpdate 事务内锁定用户行（购买扣款）。
+func (r *UserRepository) GetUserForUpdate(tx *gorm.DB, userID uint64) (*models.User, error) {
+	var user models.User
+	err := tx.Set("gorm:query_option", "FOR UPDATE").Where("id = ?", userID).First(&user).Error
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
 // GetUserByTel 根据手机号查询用户
 func (r *UserRepository) GetUserByTel(tel string) (*models.User, error) {
 	var user models.User

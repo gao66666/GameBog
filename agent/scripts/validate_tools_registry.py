@@ -85,6 +85,12 @@ VALID_RESPONSE_PRESETS = frozenset(
 
         "me_wallet",
 
+        "me_mall_orders",
+
+        "me_game_orders",
+
+        "me_points_transactions",
+
         "passthrough",
 
     }

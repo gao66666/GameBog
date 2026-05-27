@@ -1,16 +1,23 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import AppLayout from '@/layouts/AppLayout.vue'
 import { api } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { gameCoverUrl, gamePriceLabel } from '@/utils/blog'
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 const gameId = computed(() => String(route.params.id || ''))
 
 const game = ref<Record<string, unknown> | null>(null)
+const stock = ref(-1)
+const isFree = ref(false)
+const purchasing = ref(false)
+const accountBalance = ref<number | null>(null)
+
 const reviews = ref<Array<Record<string, unknown>>>([])
 const reviewsEmpty = ref('')
 const reviewMsg = ref('')
@@ -25,9 +32,29 @@ const myReview = computed(() => {
 
 const showComposer = computed(() => auth.isLoggedIn && !myReview.value && !editingId.value)
 
+async function loadAccountBalance() {
+  if (!auth.isLoggedIn) {
+    accountBalance.value = null
+    return
+  }
+  try {
+    const resp = await api<Record<string, unknown>>('/api/v1/users/me')
+    const bal = resp.data?.account_balance ?? resp.data?.accountBalance
+    accountBalance.value = bal != null ? Number(bal) : null
+  } catch {
+    accountBalance.value = null
+  }
+}
+
 async function loadGame() {
-  const resp = await api<{ game?: Record<string, unknown> }>('/api/v1/games/' + encodeURIComponent(gameId.value))
+  const resp = await api<{
+    game?: Record<string, unknown>
+    stock?: number
+    free?: boolean
+  }>('/api/v1/games/' + encodeURIComponent(gameId.value))
   game.value = resp.data?.game || null
+  stock.value = Number(resp.data?.stock ?? -1)
+  isFree.value = Boolean(resp.data?.free) || gamePriceLabel(game.value || {}) === '免费'
 }
 
 async function loadReviews() {
@@ -91,8 +118,44 @@ async function deleteReview(id: string) {
   await loadReviews()
 }
 
+async function purchase() {
+  if (!auth.isLoggedIn) {
+    router.push({ path: '/login', query: { redirect: route.fullPath } })
+    return
+  }
+  if (purchasing.value || isFree.value) return
+
+  const name = String(game.value?.name || '该游戏')
+  const priceText = gamePriceLabel(game.value || {})
+  const msg = `确认使用账户余额购买「${name}」（${priceText}）？`
+
+  try {
+    await ElMessageBox.confirm(msg, '确认', { type: 'warning' })
+  } catch {
+    return
+  }
+
+  purchasing.value = true
+  const idem = `game-${gameId.value}-${Date.now()}`
+  try {
+    const resp = await api<{ order?: { code?: string }; activation_code?: string }>(
+      '/api/v1/games/' + encodeURIComponent(gameId.value) + '/purchase',
+      { method: 'POST', data: { idempotency_key: idem } },
+    )
+    const code = resp.data?.activation_code || resp.data?.order?.code || ''
+    await loadAccountBalance()
+    await loadGame()
+    ElMessage.success(code ? `购买成功，激活码：${code}` : '购买成功')
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '购买失败')
+  } finally {
+    purchasing.value = false
+  }
+}
+
 async function boot() {
   await loadGame()
+  await loadAccountBalance()
   await loadReviews()
 }
 
@@ -109,6 +172,16 @@ onMounted(boot)
           <h1>{{ game.name }}</h1>
           <p class="muted">{{ game.publisher }} · {{ game.developer }}</p>
           <p style="font-size: 20px; font-weight: 600; margin: 12px 0">{{ gamePriceLabel(game) }}</p>
+          <p v-if="!isFree && stock >= 0" class="muted" style="font-size: 13px">库存 {{ stock }}</p>
+          <p v-if="auth.isLoggedIn && accountBalance != null && !isFree" class="muted" style="font-size: 13px">
+            账户余额 {{ accountBalance }}
+          </p>
+          <div v-if="!isFree" style="margin: 16px 0">
+            <el-button type="primary" :loading="purchasing" @click="purchase">
+              购买
+            </el-button>
+            <p v-if="!auth.isLoggedIn" class="muted" style="margin-top: 8px; font-size: 13px">登录后可购买</p>
+          </div>
           <p>{{ game.description || '暂无简介' }}</p>
         </div>
       </section>

@@ -22,6 +22,24 @@ type Game struct {
 	UpdatedAt    time.Time      `gorm:"column:updated_at" json:"updatedAt"`
 }
 
+// IsFreeGame 价格为 0 或未设置（空）时视为免费。
+func IsFreeGame(priceCents int64) bool {
+	return priceCents <= 0
+}
+
+// IsPaidGame 需要走库存与账户扣款。
+func IsPaidGame(priceCents int64) bool {
+	return priceCents > 0
+}
+
+// NormalizeGamePriceCents 付费游戏价格；非法值按 0 处理。
+func NormalizeGamePriceCents(priceCents int64) int64 {
+	if priceCents < 0 {
+		return 0
+	}
+	return priceCents
+}
+
 // GameReview 游戏点评
 type GameReview struct {
 	ID         uint64    `gorm:"primaryKey;column:id" json:"id,string"`

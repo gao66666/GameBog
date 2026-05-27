@@ -12,7 +12,7 @@ const topicCount = ref('加载中...')
 const topicEmpty = ref('')
 const page = ref(1)
 const total = ref(0)
-const size = 10
+const size = 12
 const createName = ref('')
 const createKind = ref('long')
 const createMsg = ref('')
@@ -81,14 +81,16 @@ onMounted(load)
 
       <section class="card" style="margin-top: 20px">
         <p v-if="topicEmpty" class="muted">{{ topicEmpty }}</p>
-        <div v-for="t in topics" :key="String(t.id)" class="topic-card" style="margin-bottom: 12px; padding: 14px; border: 1px solid #eee; border-radius: 12px">
-          <RouterLink :to="'/topic/' + t.id" class="topic-card-title">{{ t.name || t.Name }}</RouterLink>
-          <div class="topic-card-meta muted">
-            <span>{{ (t.isTemporary || t.is_temporary) ? '临时' : '长期' }}</span>
-            <span v-if="t.expiresAt || t.expires_at"> · {{ fmtTime(t.expiresAt || t.expires_at) }}</span>
+        <div v-else class="topics-grid">
+          <div v-for="t in topics" :key="String(t.id)" class="topic-card">
+            <RouterLink :to="'/topic/' + t.id" class="topic-card-title">{{ t.name || t.Name }}</RouterLink>
+            <div class="topic-card-meta muted">
+              <span>{{ (t.isTemporary || t.is_temporary) ? '临时' : '长期' }}</span>
+              <span v-if="t.expiresAt || t.expires_at"> · {{ fmtTime(t.expiresAt || t.expires_at) }}</span>
+            </div>
           </div>
         </div>
-        <div v-if="total > size" class="me-pager">
+        <div v-if="total > size" class="me-pager" style="margin-top: 20px">
           <button type="button" :disabled="page <= 1" @click="page--; load()">上一页</button>
           <span class="muted">第 {{ page }} / {{ maxPage() }} 页</span>
           <button type="button" :disabled="page >= maxPage()" @click="page++; load()">下一页</button>

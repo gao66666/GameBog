@@ -58,6 +58,8 @@ search:
 security:
   rate_limit_per_minute: 120
   rate_limit_burst: 20
+  # 后台内部 API（/api/v1/internal/*）密钥；生产请用环境变量 ADMIN_API_SECRET 覆盖
+  admin_api_secret: ""
 
 observability:
   enable_metrics: true

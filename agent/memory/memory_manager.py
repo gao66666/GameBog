@@ -1902,3 +1902,89 @@ async def ingest_document_chunk(
         section_path=section_path,
         preview=preview,
     )
+
+
+def ingest_markdown_document_sync(
+    article_id: str,
+    markdown: str,
+    *,
+    content_revision: int = 1,
+    source: str,
+    game_name: str | None = None,
+    chunk_size: int = 900,
+    chunk_overlap: int = 80,
+    section_order: list[str] | None = None,
+) -> dict[str, Any]:
+    """将整篇 Markdown 分片后写入公共 Qdrant 知识库。"""
+    from eval.markdown_chunker import assign_chunk_indices, chunk_markdown
+
+    article_id = article_id.strip()
+    markdown = markdown.strip()
+    source = source.strip()
+    if not article_id or not markdown or not source:
+        raise ValueError("article_id, markdown, source must be non-empty")
+    if content_revision < 1:
+        raise ValueError("content_revision must be >= 1")
+    if chunk_size < 200:
+        chunk_size = 200
+
+    if _QDRANT_CLIENT is None or _EMBEDDINGS is None:
+        raise RuntimeError("memory services not initialized; call init_memory_services first")
+
+    _ensure_kb_collection_sync()
+    doc_title = (game_name or "").strip()
+    chunks = chunk_markdown(
+        markdown,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        doc_title=doc_title,
+    )
+    indexed = assign_chunk_indices(chunks, section_order=section_order)
+
+    point_ids: list[str] = []
+    for ch, ci in indexed:
+        out = ingest_document_chunk_sync(
+            article_id,
+            ci,
+            ch.content,
+            content_revision=content_revision,
+            source=source,
+            ingest_kind="raw_chunk",
+            game_name=game_name,
+            section_path=ch.section_path,
+            preview=ch.content[:240],
+        )
+        point_ids.append(str(out.get("point_id", "")))
+
+    collection = _kb_collection_name()
+    return {
+        "collection": collection,
+        "article_id": article_id,
+        "chunks_ingested": len(point_ids),
+        "point_ids": point_ids,
+    }
+
+
+async def ingest_markdown_document(
+    article_id: str,
+    markdown: str,
+    *,
+    content_revision: int = 1,
+    source: str,
+    game_name: str | None = None,
+    chunk_size: int = 900,
+    chunk_overlap: int = 80,
+    section_order: list[str] | None = None,
+) -> dict[str, Any]:
+    await init_memory_services()
+    return await asyncio.to_thread(
+        ingest_markdown_document_sync,
+        article_id,
+        markdown,
+        content_revision=content_revision,
+        source=source,
+        game_name=game_name,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        section_order=section_order,
+    )

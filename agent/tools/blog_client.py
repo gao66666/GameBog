@@ -155,6 +155,19 @@ class BlogClient:
     def get_my_wallet(self, token: str) -> dict:
         return self._get("/points/wallet", token=token)
 
+    def get_my_mall_orders(self, token: str) -> dict:
+        return self._get("/points/mall/orders", token=token)
+
+    def get_my_points_transactions(self, token: str, page: int = 1, size: int = 20) -> dict:
+        return self._get(
+            "/points/transactions",
+            {"page": str(page), "size": str(size)},
+            token=token,
+        )
+
+    def get_my_game_orders(self, token: str) -> dict:
+        return self._get("/games/orders", token=token)
+
 
 # 全局单例
 _client: Optional[BlogClient] = None

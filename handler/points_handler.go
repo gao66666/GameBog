@@ -39,7 +39,8 @@ func (h *PointsHandler) ProcessPointsEarnMessage(ctx context.Context, payload []
 	return h.se.EarnPointsWithTxnID(p.UserID, p.RefType, p.RefID, p.TxnID)
 }
 
-// GetMyWallet 获取自己的积分账户
+// GetMyWallet 获取自己的积分账户。
+// warm_redis=1（或 from_db=1）：从 MySQL 加载并写入 Redis，再返回 Redis 中的余额（积分商城用）。
 func (h *PointsHandler) GetMyWallet(c *gin.Context) {
 	userID := AuthUserID(c)
 	if userID == 0 {
@@ -47,7 +48,33 @@ func (h *PointsHandler) GetMyWallet(c *gin.Context) {
 		return
 	}
 
-	wallet, err := h.se.EnsureWallet(userID)
+	warmRedis := c.Query("warm_redis") == "1" || c.Query("warm_redis") == "true" ||
+		c.Query("from_db") == "1" || c.Query("from_db") == "true"
+
+	var wallet *models.UserWallet
+	var err error
+	source := "db"
+
+	if warmRedis {
+		if _, err = h.se.WarmWalletRedisFromDB(userID); err != nil {
+			tool.ResponseError(c, err)
+			return
+		}
+		if w, hit, rerr := h.se.GetWalletFromRedis(userID); hit && rerr == nil {
+			wallet = w
+			source = "redis"
+		} else {
+			wallet, err = h.se.GetWalletFromDB(userID)
+			source = "db"
+		}
+	} else if w, hit, rerr := h.se.GetWalletFromRedis(userID); hit && rerr == nil {
+		wallet = w
+		source = "redis"
+	} else {
+		wallet, err = h.se.EnsureWallet(userID)
+		source = "db"
+	}
+
 	if err != nil {
 		tool.ResponseError(c, err)
 		return
@@ -56,6 +83,8 @@ func (h *PointsHandler) GetMyWallet(c *gin.Context) {
 	tool.ResponseSuccess(c, gin.H{
 		"balance":       wallet.Balance,
 		"frozenBalance": wallet.FrozenBalance,
+		"source":        source,
+		"warm_redis":    warmRedis,
 	})
 }
 
@@ -129,6 +158,7 @@ func (h *PointsHandler) Checkin(c *gin.Context) {
 
 	// 返回签到后的积分
 	wallet, _ := h.se.GetWallet(userID)
+	_ = h.se.RefreshWalletRedisFromDB(userID)
 	tool.ResponseSuccess(c, gin.H{
 		"message": "签到成功",
 		"balance": wallet.Balance,
