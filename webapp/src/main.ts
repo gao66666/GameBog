@@ -13,12 +13,14 @@ import '../../web/static/editor.css'
 import 'highlight.js/styles/github-dark-dimmed.css'
 
 async function bootstrap() {
-  await ensureDefaultLogin()
-
   const app = createApp(App)
-  app.use(createPinia())
+  const pinia = createPinia()
+  app.use(pinia)
   app.use(router)
   app.use(ElementPlus, { locale: zhCn })
+
+  await ensureDefaultLogin()
+
   app.mount('#app')
 }
 
