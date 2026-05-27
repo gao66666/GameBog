@@ -117,6 +117,7 @@ func (s *PointsService) earnPoints(userID uint64, refType string, refID uint64, 
 		return err
 	}
 
+	_ = s.InvalidateWalletRedis(userID)
 	return nil
 }
 
@@ -217,6 +218,14 @@ func (s *PointsService) RefreshWalletRedisFromDB(userID uint64) error {
 	return err
 }
 
+// InvalidateWalletRedis 删除积分余额缓存，下次查询从 MySQL 重新加载。
+func (s *PointsService) InvalidateWalletRedis(userID uint64) error {
+	if s.pointsRedis == nil || userID == 0 {
+		return nil
+	}
+	return s.pointsRedis.DelWalletBalance(userID)
+}
+
 // ListMyTransactions 按用户 ID 查询 points_transactions 流水（分页）。
 func (s *PointsService) ListMyTransactions(userID uint64, page, size int) ([]models.PointsTransaction, int64, error) {
 	return s.pointsDB.ListTransactionsByUser(userID, page, size)
@@ -234,6 +243,7 @@ func (s *PointsService) EnsureWallet(userID uint64) (*models.UserWallet, error) 
 	if err := s.pointsDB.CreateWallet(userID); err != nil {
 		return nil, err
 	}
+	_ = s.InvalidateWalletRedis(userID)
 	return s.pointsDB.GetWallet(userID)
 }
 

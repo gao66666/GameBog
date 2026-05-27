@@ -146,7 +146,7 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	articleSvc := service.NewArticleService(articleRepo, userRepo, commentRepo, followRepo, articleRedis, topicRepo, gameRepo, pointsSvc, userSvc)
 	dmSvc := service.NewDMService(dmRepo, userRepo, dmRedis)
 	topicSvc := service.NewTopicService(topicRepo, articleRepo, topicRedis)
-	gameSvc := service.NewGameService(gameRepo, gameStoreRepo, gameRedis, topicRepo, userRepo)
+	gameSvc := service.NewGameService(gameRepo, gameStoreRepo, gameRedis, topicRepo, userRepo, userRedis)
 	searchRedis := database.NewRedisSearchRepository(rdb)
 	searchSvc := service.NewSearchService(articleRepo, userRepo, commentRepo, searchRedis)
 

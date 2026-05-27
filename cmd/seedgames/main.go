@@ -53,9 +53,10 @@ func main() {
 	gameRepo := database.NewGameRepository(db)
 	gameStoreRepo := database.NewGameStoreRepository(db)
 	gameRedis := database.NewRedisGameRepository(rdb)
+	userRedis := database.NewRedisUserRepository(rdb)
 	topicRepo := database.NewTopicRepository(db)
 	userRepo := database.NewUserRepository(db)
-	svc := service.NewGameService(gameRepo, gameStoreRepo, gameRedis, topicRepo, userRepo)
+	svc := service.NewGameService(gameRepo, gameStoreRepo, gameRedis, topicRepo, userRepo, userRedis)
 
 	if err := gameRepo.InitTable(); err != nil {
 		zap.L().Warn("InitTable", zap.Error(err))

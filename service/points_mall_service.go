@@ -126,7 +126,19 @@ func (s *PointsMallService) stockForProduct(productID uint64) (int64, error) {
 }
 
 func (s *PointsMallService) ListMyOrders(userID uint64) ([]models.PointsMallOrder, error) {
-	return s.mallDB.ListOrdersByUser(userID, 50)
+	if s.mallRedis != nil {
+		if cached, hit, err := s.mallRedis.GetUserOrders(userID); err == nil && hit {
+			return cached, nil
+		}
+	}
+	list, err := s.mallDB.ListOrdersByUser(userID, 50)
+	if err != nil {
+		return nil, err
+	}
+	if s.mallRedis != nil {
+		_ = s.mallRedis.SetUserOrders(userID, list)
+	}
+	return list, nil
 }
 
 func (s *PointsMallService) Redeem(userID, productID uint64, idempotencyKey string) (*models.PointsMallOrder, error) {
@@ -194,11 +206,12 @@ func (s *PointsMallService) Redeem(userID, productID uint64, idempotencyKey stri
 		_ = s.mallRedis.SetStock(productID, n)
 	}
 
-	// 兑换后刷新 Redis 中的积分余额
-	if s.pointsRedis != nil && s.pointsDB != nil {
-		if wallet, werr := s.pointsDB.GetWallet(userID); werr == nil {
-			_ = s.pointsRedis.SetWalletBalance(userID, wallet.Balance, wallet.FrozenBalance)
-		}
+	// 兑换后失效积分余额与订单列表缓存，下次查询从 MySQL 重新加载
+	if s.pointsRedis != nil {
+		_ = s.pointsRedis.DelWalletBalance(userID)
+	}
+	if s.mallRedis != nil {
+		_ = s.mallRedis.DelUserOrders(userID)
 	}
 
 	return order, nil

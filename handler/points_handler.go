@@ -158,7 +158,7 @@ func (h *PointsHandler) Checkin(c *gin.Context) {
 
 	// 返回签到后的积分
 	wallet, _ := h.se.GetWallet(userID)
-	_ = h.se.RefreshWalletRedisFromDB(userID)
+	_ = h.se.InvalidateWalletRedis(userID)
 	tool.ResponseSuccess(c, gin.H{
 		"message": "签到成功",
 		"balance": wallet.Balance,
@@ -179,6 +179,7 @@ func (h *PointsHandler) CheckinViaQuery(c *gin.Context) {
 	}
 
 	wallet, _ := h.se.GetWallet(userID)
+	_ = h.se.InvalidateWalletRedis(userID)
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": "签到成功",

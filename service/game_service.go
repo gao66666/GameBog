@@ -27,6 +27,7 @@ type GameService struct {
 	gameRedis *database.RedisGameRepository
 	topicRepo *database.TopicRepository
 	userRepo  *database.UserRepository
+	userRedis *database.RedisUserRepository
 }
 
 var errGameInvalidParam = tool.NewBizError(400, 40001, "不正确的参数")
@@ -37,6 +38,7 @@ func NewGameService(
 	gameRedis *database.RedisGameRepository,
 	topicRepo *database.TopicRepository,
 	userRepo *database.UserRepository,
+	userRedis *database.RedisUserRepository,
 ) *GameService {
 	return &GameService{
 		gameRepo:  gameRepo,
@@ -44,6 +46,7 @@ func NewGameService(
 		gameRedis: gameRedis,
 		topicRepo: topicRepo,
 		userRepo:  userRepo,
+		userRedis: userRedis,
 	}
 }
 
@@ -505,7 +508,12 @@ func (s *GameService) PurchaseGame(userID, gameID uint64, idempotencyKey string)
 		return nil, err
 	}
 	if s.gameRedis != nil {
+		_ = s.gameRedis.DeleteUserGamePlay(userID, gameID)
 		_ = s.gameRedis.DeleteUserGamePlayList(userID)
+		_ = s.gameRedis.DelUserGameOrders(userID)
+	}
+	if s.userRedis != nil {
+		_ = s.userRedis.DelAccountBalance(userID)
 	}
 	return order, nil
 }
@@ -514,7 +522,19 @@ func (s *GameService) ListMyGameOrders(userID uint64) ([]models.GameOrder, error
 	if s.gameStore == nil {
 		return []models.GameOrder{}, nil
 	}
-	return s.gameStore.ListOrdersByUser(userID, 50)
+	if s.gameRedis != nil {
+		if cached, hit, err := s.gameRedis.GetUserGameOrders(userID); err == nil && hit {
+			return cached, nil
+		}
+	}
+	list, err := s.gameStore.ListOrdersByUser(userID, 50)
+	if err != nil {
+		return nil, err
+	}
+	if s.gameRedis != nil {
+		_ = s.gameRedis.SetUserGameOrders(userID, list)
+	}
+	return list, nil
 }
 
 func hashIdem(s string) uint64 {

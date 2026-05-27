@@ -107,16 +107,32 @@ func (se *UserService) GetUserByID(userID uint64) (*models.User, error) {
 	return se.userRepo.GetUserByID(userID)
 }
 
-// GetAccountBalance 账户余额：始终读 MySQL，不使用 Redis。
+// GetAccountBalance 账户余额：优先 Redis，miss 读 MySQL 并回填。
 func (se *UserService) GetAccountBalance(userID uint64) (int64, error) {
 	if userID == 0 {
 		return 0, ErrUserNotFound
+	}
+	if se.redisRepo != nil {
+		if bal, ok, err := se.redisRepo.GetAccountBalance(userID); err == nil && ok {
+			return bal, nil
+		}
 	}
 	u, err := se.userRepo.GetUserByID(userID)
 	if err != nil {
 		return 0, err
 	}
+	if se.redisRepo != nil {
+		_ = se.redisRepo.SetAccountBalance(userID, u.AccountBalance)
+	}
 	return u.AccountBalance, nil
+}
+
+// InvalidateAccountBalanceRedis 账户余额变动后删除 Redis 缓存。
+func (se *UserService) InvalidateAccountBalanceRedis(userID uint64) {
+	if se.redisRepo == nil || userID == 0 {
+		return
+	}
+	_ = se.redisRepo.DelAccountBalance(userID)
 }
 
 func (se *UserService) loadSocialStatsFromDB(userID uint64) (followingUsers int64, followers int64, err error) {

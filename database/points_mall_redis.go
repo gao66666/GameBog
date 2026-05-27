@@ -2,11 +2,16 @@ package database
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/gao66666/GoBlog/models"
 	"github.com/redis/go-redis/v9"
 )
+
+const mallOrdersCacheTTL = 10 * time.Minute
 
 // RedisPointsMallRepository 商城库存（Redis 原子扣减，与 MySQL 码库对齐）。
 type RedisPointsMallRepository struct {
@@ -30,6 +35,10 @@ func mallRedeemLockKey(userID uint64) string {
 
 func mallIdempotencyKey(userID uint64, idem string) string {
 	return fmt.Sprintf("mall:idem:%d:%s", userID, idem)
+}
+
+func mallUserOrdersKey(userID uint64) string {
+	return fmt.Sprintf("mall:orders:%d", userID)
 }
 
 // redeemStockScript 原子扣减库存：成功返回 1，库存不足返回 0。
@@ -130,4 +139,46 @@ func (r *RedisPointsMallRepository) SaveIdempotentOrderID(userID uint64, idem st
 	}
 	ctx := context.Background()
 	return r.client.Set(ctx, mallIdempotencyKey(userID, idem), orderID, 24*time.Hour).Err()
+}
+
+// GetUserOrders 读取用户兑换订单列表缓存。
+func (r *RedisPointsMallRepository) GetUserOrders(userID uint64) ([]models.PointsMallOrder, bool, error) {
+	if r == nil || r.client == nil || userID == 0 {
+		return nil, false, nil
+	}
+	ctx := context.Background()
+	val, err := r.client.Get(ctx, mallUserOrdersKey(userID)).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	var list []models.PointsMallOrder
+	if err := json.Unmarshal([]byte(val), &list); err != nil {
+		return nil, false, err
+	}
+	return list, true, nil
+}
+
+// SetUserOrders 写入用户兑换订单列表缓存。
+func (r *RedisPointsMallRepository) SetUserOrders(userID uint64, list []models.PointsMallOrder) error {
+	if r == nil || r.client == nil || userID == 0 {
+		return nil
+	}
+	body, err := json.Marshal(list)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	return r.client.Set(ctx, mallUserOrdersKey(userID), body, mallOrdersCacheTTL).Err()
+}
+
+// DelUserOrders 删除用户兑换订单列表缓存（兑换成功后失效）。
+func (r *RedisPointsMallRepository) DelUserOrders(userID uint64) error {
+	if r == nil || r.client == nil || userID == 0 {
+		return nil
+	}
+	ctx := context.Background()
+	return r.client.Del(ctx, mallUserOrdersKey(userID)).Err()
 }

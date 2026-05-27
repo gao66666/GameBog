@@ -15,6 +15,7 @@ const (
 	userBaseCacheTTL       = 2 * time.Hour
 	userSocialStatsTTL     = 30 * time.Minute
 	userSocialStatsKeyFmt  = "user:social_stats:%d"
+	userAccountBalanceKeyFmt = "user:account_balance:%d"
 )
 
 type cachedUserSocialStats struct {
@@ -136,4 +137,46 @@ func (r *RedisUserRepository) DelUserBase(userID uint64) error {
 	}
 	ctx := context.Background()
 	return r.client.Del(ctx, userBaseKey(userID)).Err()
+}
+
+func userAccountBalanceKey(userID uint64) string {
+	return fmt.Sprintf(userAccountBalanceKeyFmt, userID)
+}
+
+// GetAccountBalance 读取账户余额 Redis 缓存（未命中 ok=false）。
+func (r *RedisUserRepository) GetAccountBalance(userID uint64) (balance int64, ok bool, err error) {
+	if r == nil || r.client == nil || userID == 0 {
+		return 0, false, nil
+	}
+	ctx := context.Background()
+	val, err := r.client.Get(ctx, userAccountBalanceKey(userID)).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	var n int64
+	if _, scanErr := fmt.Sscanf(val, "%d", &n); scanErr != nil {
+		return 0, false, scanErr
+	}
+	return n, true, nil
+}
+
+// SetAccountBalance 写入账户余额 Redis 缓存。
+func (r *RedisUserRepository) SetAccountBalance(userID uint64, balance int64) error {
+	if r == nil || r.client == nil || userID == 0 {
+		return nil
+	}
+	ctx := context.Background()
+	return r.client.Set(ctx, userAccountBalanceKey(userID), fmt.Sprintf("%d", balance), userBaseCacheTTL).Err()
+}
+
+// DelAccountBalance 删除账户余额缓存（扣款等变动后失效，下次从 MySQL 重读）。
+func (r *RedisUserRepository) DelAccountBalance(userID uint64) error {
+	if r == nil || r.client == nil || userID == 0 {
+		return nil
+	}
+	ctx := context.Background()
+	return r.client.Del(ctx, userAccountBalanceKey(userID)).Err()
 }

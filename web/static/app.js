@@ -159,6 +159,65 @@
     /** 游戏库/详情：数据库未填 coverUrl 时使用的统一默认封面（勿与 Picsum 随机图混淆） */
     var defaultGameCoverUrl = 'https://pic4.zhimg.com/v2-cad31f1efa6d4940651ebec9063fd5cb_r.jpg';
 
+    var DEMO_LOGIN_TEL = '13800088001';
+    var DEMO_LOGIN_PASSWORD = 'EvalTest123!';
+    var DEMO_LOGIN_NAME = 'demo';
+
+    function isAutoLoginEnabled() {
+        if (localStorage.getItem('gb_token')) return false;
+        return true;
+    }
+
+    function isUserNotFoundError(err) {
+        var msg = err && err.message ? err.message : String(err || '');
+        return msg.indexOf('用户不存在') >= 0 || msg.indexOf('40001') >= 0;
+    }
+
+    async function loginDemoUser() {
+        var resp = await api('/api/v1/login', {
+            method: 'POST',
+            body: JSON.stringify({ tel: DEMO_LOGIN_TEL, password: DEMO_LOGIN_PASSWORD })
+        });
+        var data = resp && resp.data;
+        if (!data || !data.token) return false;
+        setAuth({
+            token: data.token,
+            userId: String(data.user_id || ''),
+            userName: String(data.user_name || '')
+        });
+        return true;
+    }
+
+    async function createDemoUser() {
+        await api('/api/v1/signup', {
+            method: 'POST',
+            body: JSON.stringify({
+                username: DEMO_LOGIN_NAME,
+                tel: DEMO_LOGIN_TEL,
+                password: DEMO_LOGIN_PASSWORD
+            })
+        });
+    }
+
+    async function ensureDefaultLogin() {
+        if (!isAutoLoginEnabled()) return;
+        try {
+            if (await loginDemoUser()) return;
+        } catch (e) {
+            if (!isUserNotFoundError(e)) return;
+        }
+        try {
+            await createDemoUser();
+        } catch (e) {
+            // 并发注册或账号已存在时继续尝试登录
+        }
+        try {
+            await loginDemoUser();
+        } catch (e) {
+            // 静默跳过
+        }
+    }
+
     window.GameBog = {
         qs,
         api,
@@ -173,9 +232,11 @@
     window.GoBlog = window.GameBog;
 
     document.addEventListener('DOMContentLoaded', function () {
-        setupNav();
-        // 登录态：任意页面保持 WS 连接（用于在线状态/通知推送）
-        ensureWSConnected();
+        ensureDefaultLogin().finally(function () {
+            setupNav();
+            // 登录态：任意页面保持 WS 连接（用于在线状态/通知推送）
+            ensureWSConnected();
+        });
 
         // 动态加载 AI 助手侧边栏
         var as = document.createElement('script');

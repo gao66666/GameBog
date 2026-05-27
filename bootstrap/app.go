@@ -81,7 +81,6 @@ func Init(configPath string) (*Runtime, error) {
 	}
 
 	// pprof（仅在显式启用时启动；建议线上只绑定 localhost）
-	// if setting.Conf.ObservabilityConfig != nil && setting.Conf.ObservabilityConfig.EnablePprof {
 	// 	srv := &http.Server{
 	// 		Addr:              setting.Conf.ObservabilityConfig.PprofAddr,
 	// 		Handler:           http.DefaultServeMux,

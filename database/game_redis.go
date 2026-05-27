@@ -220,6 +220,49 @@ func (r *RedisGameRepository) DeleteUserGamePlayList(userID uint64) error {
 	return r.client.Del(context.Background(), fmt.Sprintf("game:ugp:list:%d", userID)).Err()
 }
 
+func gameUserOrdersKey(userID uint64) string {
+	return fmt.Sprintf("game:orders:%d", userID)
+}
+
+// GetUserGameOrders 读取用户游戏购买订单列表缓存。
+func (r *RedisGameRepository) GetUserGameOrders(userID uint64) ([]models.GameOrder, bool, error) {
+	if r == nil || r.client == nil || userID == 0 {
+		return nil, false, nil
+	}
+	val, err := r.client.Get(context.Background(), gameUserOrdersKey(userID)).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	var list []models.GameOrder
+	if err := json.Unmarshal([]byte(val), &list); err != nil {
+		return nil, false, err
+	}
+	return list, true, nil
+}
+
+// SetUserGameOrders 写入用户游戏购买订单列表缓存。
+func (r *RedisGameRepository) SetUserGameOrders(userID uint64, list []models.GameOrder) error {
+	if r == nil || r.client == nil || userID == 0 {
+		return nil
+	}
+	body, err := json.Marshal(list)
+	if err != nil {
+		return err
+	}
+	return r.client.Set(context.Background(), gameUserOrdersKey(userID), body, gameCacheTTL).Err()
+}
+
+// DelUserGameOrders 删除用户游戏购买订单列表缓存（购买成功后失效）。
+func (r *RedisGameRepository) DelUserGameOrders(userID uint64) error {
+	if r == nil || r.client == nil || userID == 0 {
+		return nil
+	}
+	return r.client.Del(context.Background(), gameUserOrdersKey(userID)).Err()
+}
+
 // --- GameTopicMap 缓存 ---
 
 func (r *RedisGameRepository) GetGameTopicMap(gameID uint64) (uint, bool, error) {
