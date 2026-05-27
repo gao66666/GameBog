@@ -8,9 +8,9 @@ AGENT_DIR = Path(__file__).resolve().parents[1]
 
 SAMPLE = """# 测试游戏
 
-## 简介
+## 游戏名片
 
-这是简介段落。
+这是游戏名片段落。
 
 ## 配置需求
 
@@ -25,17 +25,17 @@ SAMPLE = """# 测试游戏
 def test_heading_split():
     chunks = chunk_markdown(SAMPLE, chunk_size=400, chunk_overlap=40, doc_title="测试游戏")
     titles = [c.section_title for c in chunks]
-    assert "简介" in titles
+    assert "游戏名片" in titles
     assert "配置需求" in titles
     assert any(c.part_index > 0 for c in chunks if c.section_title == "配置需求")
 
 
 def test_chunk_index_encoding():
     chunks = chunk_markdown(SAMPLE, chunk_size=400, doc_title="测试游戏")
-    order = ["简介", "游戏背景", "配置需求", "玩法", "注意事项"]
+    order = ["游戏名片", "游戏背景", "配置需求", "玩法", "注意事项"]
     indexed = assign_chunk_indices(chunks, section_order=order)
     by_sec = {ch.section_title: ci for ch, ci in indexed}
-    assert by_sec["简介"] == 0
+    assert by_sec["游戏名片"] == 0
     assert by_sec["玩法"] == 300
 
 
@@ -44,3 +44,5 @@ def test_real_article_dry_run():
     chunks = chunk_markdown(md, chunk_size=500, chunk_overlap=50, doc_title="艾尔登法环")
     assert len(chunks) >= 5
     assert all("【" in c.content for c in chunks)
+    intro = next(c for c in chunks if c.section_title == "游戏名片")
+    assert intro.content.startswith("检索: 艾尔登法环 | 游戏名片")

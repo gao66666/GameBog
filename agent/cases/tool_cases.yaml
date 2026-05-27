@@ -11,7 +11,7 @@
 
 defaults:
   max_total_ms: 45000
-  disposition_any: [answer, close, proceed]
+  disposition_any: [answer, proceed, clarify, cannot]
 
 cases:
   # ── general（3）──

@@ -35,23 +35,17 @@ routing: |
   - 3～8 条，每条尽量短；须落在所选 servers 对应能力内；未登录时不要 user 专属 hint
   - 若本轮不需要查工具（`servers` 为 []），则 `tool_hints` 应为 []
 
-  **`memory_hints`（长期记忆 + 公共 Wiki 的检索关键词，不是工具名）**
-  另输出 `memory_hints` 数组，供后续 **Mongo**、**Qdrant Dense（向量）** 与 **Qdrant Sparse（BM25）** 使用；Dense 侧用检索改写句，Sparse 侧仅用本数组拼接。
-  - **要写的是**：本轮召回用的**短检索词**——实体名、主题、意图短语，与用户问题强相关。例如：
-    - 问某游戏：游戏名（如「博德之门3」「原神」）、意图（如「配置需求」「玩法」「背景」）
-    - 问个人：画像/偏好/项目（如「GoBlog」「后端工程师」「收藏习惯」）
-    - 可写 3～8 条，每条尽量短；与 `tool_hints` 分工：`tool_hints` 对工具注册表，`memory_hints` 对「要记住搜什么」
-  - **数组顺序（重要）**：按在本轮所属领域内的**区分度从高到低**排列——**实体/专名/项目名放最前**；通用意图、小节名（如「配置需求」「玩法」「简介」）放后面。示例顺序：`["博德之门3", "配置需求"]` 而非 `["配置需求", "博德之门3"]`
-  - **不要写的是**：tool_hints 同款（「文章搜索」「游戏库」等工具能力名）、空泛词（「游戏」「问题」）、MCP 工具 code
-  - 未登录时仍可写与问题相关的实体/主题 hint（用于公共 Wiki）；若无有效检索词则 `[]`
+  **`memory_hints`（挑选什么词用于检索，不是工具名）**
+  供后续用户记忆检索用。必须基于本轮用户的问题与改写句子中找到或者生成**2～6 个检索短词**；标准是它们能够用于在大量文档中快速定位和区分有关的文档，
+  例如：[博德之门3，配置需求]或者[博德之门3，游戏背景]。
+  - 检索词遵循的排序规则是：具有更高区分度的词放在前面。例如：[博德之门3，配置需求，游戏背景]。
+  - **不要写**：工具能力名（「游戏库」）、空泛词（「游戏」，「问题」）、整句复述
+  - 不用查记忆时 `[]`
 
   只输出 JSON（`servers` 顺序不限）。示例：
-  {{"servers": ["public"], "tool_hints": ["文章搜索", "全文检索"], "memory_hints": ["GoBlog", "部署"]}}
   {{"servers": ["public"], "tool_hints": ["游戏库", "游戏详情"], "memory_hints": ["博德之门3", "配置需求"]}}
-  {{"servers": ["public"], "tool_hints": ["游戏库", "游戏详情"], "memory_hints": ["哈迪斯", "配置需求"]}}
-  {{"servers": ["public"], "tool_hints": ["游戏库", "游戏详情"], "memory_hints": ["哈迪斯", "玩法"]}}
-  {{"servers": ["general"], "tool_hints": ["当前时间", "数学计算"], "memory_hints": ["时区偏好"]}}
-  {{"servers": [], "tool_hints": [], "memory_hints": []}}
+  {{"servers": ["public"], "tool_hints": ["游戏库", "游戏详情"], "memory_hints": ["艾尔登法环", "游戏背景"]}}
+  {{"servers": ["general"], "tool_hints": ["当前时间"], "memory_hints": []}}
 
 system: |
   你是 GameBog 的智能助手「小博」，热情、简洁。
@@ -71,7 +65,7 @@ execute_system: |
   - 计划步骤所需的工具调用完成后**立即停止**，不要额外调用。
 
 analyse: |
-  你是「分析」模块（{phase_label}）。须**综合**用户原话、检索改写、对话节选、中期摘要{extra_context}，给出 disposition 与**具体分析**（analysis 字段）。
+  你是「分析」模块（单轮编排，execute 前唯一一次分析）。须**综合**用户原话、检索改写、对话节选、中期摘要，给出 disposition 与**具体分析**（analysis 字段）。
 
   已选 MCP 工具组：{servers}
 
@@ -89,30 +83,25 @@ analyse: |
 
   中期摘要（JSON）：
   {mid_json}
-  {post_section}
 
   只输出一个 JSON 对象（不要 markdown），字段：
   {{
-    "disposition": "proceed | replan | close | clarify | cannot | answer",
+    "disposition": "proceed | clarify | cannot | answer",
     "analysis": "中文：结合上述输入与用户问题，说明当前掌握的信息、缺口、风险，以及为何选择该 disposition（3～8 句）",
     "intent": "一句话概括用户意图",
-    "notes_for_planner": "disposition 为 proceed/replan 时：给计划模块的要点；否则空字符串",
-    "replan_reason": "disposition 为 replan 时：为何需要换计划或再执行一轮；否则空字符串",
+    "notes_for_planner": "disposition 为 proceed 时：给计划模块的要点；否则空字符串",
     "clarify_message": "disposition 为 clarify 时：对用户可见的完整追问；否则空字符串",
     "cannot_reason": "disposition 为 cannot 时：对用户可见的完整说明；否则空字符串",
     "candidate_tool_codes": ["T01"]
   }}
 
-  disposition 规则：
+  disposition 四选一（**禁止**输出 replan、close、done 等其它值；工具执行后由 output 模块统一成稿，无第二轮分析）：
   - **answer**：无需工具与长期记忆即可完整、准确回答（闲聊、常识、上下文已够）。
   - **clarify**：缺关键参数且无法合理推断。
   - **cannot**：能力边界内确定无法完成。
-  - **proceed**：首次需要进入计划+工具执行（尚未有工具结果，或首轮）。
-  - **replan**：已有工具结果但**不够**、失败、或需换方案，须再 plan+execute（仅 execute 后可用）。
-  - **close**：已有足够信息（含工具结果与/或记忆），可交给 **output** 模块写最终回复（仅 execute 后可用；或 answer/clarify/cannot 由 output 代写时也可先标 close）。
+  - **proceed**：需要 plan + 工具执行 + 记忆检索后，由 output 综合成稿。
 
-  execute 前（phase=pre）**禁止**输出 replan/close（尚无工具结果时 close 用 answer/clarify/cannot）。
-  不确定时 pre 默认 proceed；post 若结果明显不足默认 replan，明显足够默认 close。
+  不确定时默认 **proceed**。
 
 plan: |
   你是「计划」模块。输入含分析 JSON、长期记忆与工具完整说明。
@@ -159,7 +148,7 @@ output: |
   - disposition 为 clarify：以 clarify_message 为主，润色为自然追问。
   - disposition 为 cannot：以 cannot_reason 为主，清晰说明局限。
   - disposition 为 answer：基于 analysis 与对话上下文直接回答，勿捏造数据。
-  - disposition 为 close：综合 analysis、计划、**工具结果**与长期记忆成稿；与工具冲突以工具为准。
+  - disposition 为 proceed：综合 analysis、计划、**工具结果**与长期记忆成稿；与工具冲突以工具为准。
   - 始终用中文；不要输出 JSON 或 markdown 代码块。
 
   只输出 JSON：
@@ -259,14 +248,30 @@ memory_decision: |
   只输出 JSON，不要解释。
 
 rewrite: |
-  将用户问题改写为更适合检索的形式。重写规则：
-  - 补全省略和指代（如"那个"→具体名称）
-  - 使用标准术语
-  - 拆分复合问题为多个检索要点
+  将用户原始问题改写为更适合检索的表述。请**严格按以下顺序**处理，前一步完成后再做后一步：
+
+  **第一步：书面化**
+  - 改写成完整、规范的书面语，语气中性、信息不丢。
+  - 在本步内补全省略与指代（如「那个游戏」→ 具体游戏名）。
+  - 示例：「苹果股价」→「苹果公司最新股票价格与市场表现」。
+
+  **第二步：拆分检索意图**（用户一句里有两个及以上可独立回答的子问题时**必须拆**）
+  - 每个要点单独成句，句末用问号；要点之间只用中文分号「；」连接，**不要用逗号、顿号把多个问句揉成一句**。
+  - 每一分段将单独做向量（Dense）检索；不要超过 3 个要点。
+  - 示例（类型 + 开发商是两件事，必须两段）：
+    用户：艾尔登法环什么类型、谁开发的
+    ✓ `艾尔登法环（Elden Ring）是什么类型（游戏类型 类别）的游戏？；艾尔登法环由谁（开发商 制作方 开发团队）开发（制作 研发）？`
+    ✗ `……是什么类型的游戏，由谁开发……`（逗号连接的两问合一句）
+  - 单意图问题不要硬拆，保持一句即可。
+
+  **第三步：同义词与相关词补充**
+  - 在**每个检索要点**的关键实体与核心动作旁，用括号补充同义词、近义词或常见相关词。
+  - 格式示例：「如何修复（维修 修理 故障排除）汽车（轿车 车辆）」。
+  - 不要堆砌无关词；专名、游戏名、产品名等指代明确词语一般不再扩义。
 
   原始问题：{query}
 
-  只输出改写后的问题，不要解释。
+  只输出最终改写后的检索用文本（一步到位的结果），不要解释过程。
 
 turn_audit: |
   你是「Turn 离线核查」模块（工程/测评用，用户永远看不到）。根据**完整一轮 agent_turn JSON** 与已有**规则核查结果**，分析用户问题与助手答复是否对齐，并结合编排链路（改写、路由、工具召回/调用、analyse、plan、长期记忆 retrieve、timings）定位问题根因。

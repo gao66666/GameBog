@@ -656,7 +656,7 @@ _LOW_DISCRIMINATION_HINTS: frozenset[str] = frozenset(
         "问题",
         "攻略",
         "背景",
-        "简介",
+        "游戏名片",
         "游戏背景",
         "游戏介绍",
         "介绍",
@@ -1111,6 +1111,80 @@ def _qdrant_vector_search(
     raise RuntimeError("QdrantClient 不支持 query_points/search，请升级或降级 qdrant-client")
 
 
+def _merge_dense_rows_by_max_score(row_lists: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """多路 Dense 召回：同一 memory_id 保留最高分。"""
+    best: dict[str, dict[str, Any]] = {}
+    for rows in row_lists:
+        for row in rows:
+            pid = str(row.get("memory_id", "")).strip()
+            if not pid:
+                continue
+            score = float(row.get("dense_score", row.get("score", 0)) or 0)
+            prev = best.get(pid)
+            if prev is None or score > float(prev.get("dense_score", prev.get("score", 0)) or 0):
+                merged = dict(row)
+                merged["dense_score"] = score
+                best[pid] = merged
+    return sorted(best.values(), key=lambda x: -float(x.get("dense_score", x.get("score", 0)) or 0))
+
+
+def _dense_rows_for_embedded_queries(
+    collection_name: str,
+    queries: list[str],
+    cap: int,
+    query_filter: rest.Filter | None,
+) -> list[dict[str, Any]]:
+    """多 query 各做 Dense，同 chunk 取 max 分后按分降序（最多 cap 条候选）。"""
+    if _QDRANT_CLIENT is None or cap <= 0 or not queries:
+        return []
+    per_limit = max(1, (cap + len(queries) - 1) // len(queries))
+    try:
+        vectors = _embed_texts(queries)
+        if not vectors or len(vectors) != len(queries):
+            return []
+    except Exception:
+        return []
+
+    row_lists: list[list[dict[str, Any]]] = []
+    for query_vector in vectors:
+        try:
+            hits = _qdrant_vector_search(
+                _QDRANT_CLIENT,
+                collection_name=collection_name,
+                query_vector=query_vector,
+                query_filter=query_filter,
+                limit=per_limit,
+            )
+            row_lists.append(_qdrant_hits_to_rows(hits, score_field="dense_score"))
+        except Exception:
+            continue
+    return _merge_dense_rows_by_max_score(row_lists)[:cap]
+
+
+def _search_qdrant_dense_multi(
+    collection_name: str,
+    query: str,
+    limit: int,
+    query_filter: rest.Filter | None,
+    *,
+    prefetch: int | None = None,
+) -> list[dict[str, Any]]:
+    """按改写拆出的各检索要点分别做 Dense，再按 point 取 max 分合并。"""
+    from core.rag import parse_rewrite_intents
+
+    if _QDRANT_CLIENT is None or limit <= 0 or not (query or "").strip():
+        return []
+
+    cap = max(limit, int(prefetch or limit))
+    dense_queries = parse_rewrite_intents(query)
+    if not dense_queries:
+        dense_queries = [(query or "").strip()]
+    if not dense_queries[0]:
+        return []
+    rows = _dense_rows_for_embedded_queries(collection_name, dense_queries, cap, query_filter)
+    return rows[:limit]
+
+
 def _search_qdrant_dense_only(
     collection_name: str,
     query: str,
@@ -1118,33 +1192,9 @@ def _search_qdrant_dense_only(
     query_filter: rest.Filter | None,
 ) -> list[dict[str, Any]]:
     """纯向量检索（关闭 hybrid_search 时使用）。"""
-    dense_text = (query or "").strip()
-    if _QDRANT_CLIENT is None or limit <= 0 or not dense_text:
+    if not (query or "").strip():
         return []
-
-    try:
-        query_vectors = _embed_texts([dense_text])
-        if not query_vectors:
-            return []
-        query_vector = query_vectors[0]
-        hits = _qdrant_vector_search(
-            _QDRANT_CLIENT,
-            collection_name=collection_name,
-            query_vector=query_vector,
-            query_filter=query_filter,
-            limit=limit,
-        )
-    except Exception:
-        return []
-
-    now = datetime.now(timezone.utc)
-    results: list[dict[str, Any]] = []
-    for hit in hits:
-        payload = hit.payload or {}
-        raw_score = float(hit.score or 0)
-        pid = str(getattr(hit, "id", "") or "")
-        results.append(_build_qdrant_row_from_payload(payload, raw_score, now, point_id=pid))
-    return results
+    return _search_qdrant_dense_multi(collection_name, query, limit, query_filter)
 
 
 def _search_qdrant_sparse_only(
@@ -1180,7 +1230,7 @@ def _search_qdrant_hybrid(
     *,
     memory_hints: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Dense= 检索改写句；Sparse=memory_hints；Sparse 重排后与 Dense 归一化加权融合。"""
+    """Dense= 改写各检索要点分别向量检索后合并；Sparse=memory_hints；再归一化加权融合。"""
     mem = load_config().get("memory", {})
     dense_text = (query or "").strip()
     if _QDRANT_CLIENT is None or limit <= 0 or not dense_text:
@@ -1190,26 +1240,18 @@ def _search_qdrant_hybrid(
     recall_kw = bool(mem.get("hybrid_keyword_recall", True))
     ordered_hints = sort_memory_hints_for_retrieval(memory_hints)
 
-    query_vectors = _embed_texts([dense_text])
-    if not query_vectors:
-        return []
-    query_vector = query_vectors[0]
-
     sparse_text = _sparse_query_text(query, ordered_hints or memory_hints)
     sparse_q = _sparse_document_from_text(sparse_text)
 
     if not recall_kw or sparse_q is None:
-        return _search_qdrant_dense_only(collection_name, query, limit, query_filter)
+        return _search_qdrant_dense_multi(
+            collection_name, query, limit, query_filter, prefetch=prefetch_n
+        )
 
     try:
-        dense_hits = _qdrant_vector_search(
-            _QDRANT_CLIENT,
-            collection_name=collection_name,
-            query_vector=query_vector,
-            query_filter=query_filter,
-            limit=prefetch_n,
+        dense_rows = _search_qdrant_dense_multi(
+            collection_name, query, limit, query_filter, prefetch=prefetch_n
         )
-        dense_rows = _qdrant_hits_to_rows(dense_hits, score_field="dense_score")
         sparse_rows = _search_qdrant_sparse_only(
             collection_name, sparse_text, prefetch_n, query_filter
         )
@@ -1249,7 +1291,9 @@ def _search_qdrant_in_collection(
             query_filter,
             memory_hints=memory_hints,
         )
-    return _search_qdrant_dense_only(collection_name, query, limit, query_filter)
+        return _search_qdrant_dense_only(
+            collection_name, query, limit, query_filter, memory_hints=memory_hints
+        )
 
 
 def _merge_qdrant_hit_lists(*hit_lists: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -1300,6 +1344,7 @@ def _merge_row_from_hit(item: dict[str, Any]) -> dict[str, Any]:
         "source": item.get("source", "memory_manager"),
     }
     for k in (
+        "memory_id",
         "memory_scope",
         "ingest_kind",
         "article_id",

@@ -19,7 +19,9 @@ import (
 	"github.com/gao66666/GoBlog/database"
 	"github.com/gao66666/GoBlog/handler"
 	"github.com/gao66666/GoBlog/handler/channel"
+	"github.com/gao66666/GoBlog/handler/channel/dingtalk"
 	"github.com/gao66666/GoBlog/handler/channel/feishu"
+	"github.com/gao66666/GoBlog/handler/channel/slack"
 	"github.com/gao66666/GoBlog/handler/channel/wecom"
 	"github.com/gao66666/GoBlog/logger"
 	"github.com/gao66666/GoBlog/middleware"
@@ -164,6 +166,8 @@ func SetupApp(db *gorm.DB, rdb *redis.Client) *App {
 	channelHub := channel.NewHub(agentHandler, agentChatStore, channelStore)
 	channelHub.Register(feishu.NewAdapter(feishu.LoadConfigFromEnv()))
 	channelHub.Register(wecom.NewAdapter(wecom.LoadConfigFromEnv()))
+	channelHub.Register(slack.NewAdapter(slack.LoadConfigFromEnv()))
+	channelHub.Register(dingtalk.NewAdapter(dingtalk.LoadConfigFromEnv()))
 
 	return &App{
 		UserHandler:              handler.NewUserHandler(userSvc),

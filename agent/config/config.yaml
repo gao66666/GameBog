@@ -89,8 +89,8 @@ memory:
   hint_rerank_enabled: true
   hint_rerank_hint_weight: 0.65
   hint_rerank_bm25_weight: 0.35
-  hybrid_dense_weight: 0.55
-  hybrid_keyword_weight: 0.45
+  hybrid_dense_weight: 0.50
+  hybrid_keyword_weight: 0.50
   hybrid_keyword_recall: true
 
 orchestration:
@@ -101,7 +101,7 @@ orchestration:
   tool_retrieval_keyword_weight: 0.35
   tool_retrieval_fallback_all: true
   dynamic_tool_injection: true
-  max_orchestration_cycles: 3
+  max_orchestration_cycles: 1
   post_turn_async_log: true
 
 turn_audit:

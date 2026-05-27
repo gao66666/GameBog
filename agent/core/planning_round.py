@@ -1,5 +1,5 @@
 """
-编排：analyse（disposition + 综合分析）→ plan → execute(仅工具) → [analyse 复检] → output 成稿。
+编排（单轮）：analyse(pre) → plan → execute(仅工具) → output 成稿；执行后不再 post analyse / replan。
 """
 
 from __future__ import annotations
@@ -20,8 +20,11 @@ from core.token_usage import record_llm_usage
 
 _log = get_logger("planning_round")
 
-TERMINAL_DISPOSITIONS = frozenset({"close", "clarify", "cannot", "answer"})
-EXECUTE_DISPOSITIONS = frozenset({"proceed", "replan"})
+# 单轮编排：analyse 仅四态；工具执行后由 output 成稿，不再使用 close / replan。
+TERMINAL_DISPOSITIONS = frozenset({"clarify", "cannot", "answer"})
+VALID_DISPOSITIONS = frozenset({"proceed", "clarify", "cannot", "answer"})
+# 兼容旧 import（main 仅判断 TERMINAL vs 继续执行）
+EXECUTE_DISPOSITIONS = frozenset({"proceed"})
 
 
 def _strip_json_fence(text: str) -> str:
@@ -42,7 +45,7 @@ def _safe_json_loads(text: str) -> dict[str, Any] | None:
 
 
 def normalize_disposition(analyse: dict[str, Any]) -> str:
-    """归一化 disposition：proceed | replan | close | clarify | cannot | answer。"""
+    """归一化 disposition：proceed | clarify | cannot | answer（close/replan 等一律视为 proceed）。"""
     raw = str(analyse.get("disposition") or analyse.get("resolution") or "proceed").strip()
     key = raw.lower()
     mapping = {
@@ -50,13 +53,13 @@ def normalize_disposition(analyse: dict[str, Any]) -> str:
         "continue": "proceed",
         "go": "proceed",
         "ok": "proceed",
-        "replan": "replan",
-        "retry": "replan",
-        "again": "replan",
-        "close": "close",
-        "done": "close",
-        "end": "close",
-        "finish": "close",
+        "replan": "proceed",
+        "retry": "proceed",
+        "again": "proceed",
+        "close": "proceed",
+        "done": "proceed",
+        "end": "proceed",
+        "finish": "proceed",
         "answer": "answer",
         "direct": "answer",
         "clarify": "clarify",
@@ -102,7 +105,6 @@ def _default_analyse() -> dict[str, Any]:
         "analysis": "",
         "intent": "",
         "notes_for_planner": "",
-        "replan_reason": "",
         "clarify_message": "",
         "cannot_reason": "",
         "candidate_tool_codes": [],
@@ -114,7 +116,6 @@ def _normalize_analyse(parsed: dict[str, Any], code_to_name: dict[str, str]) -> 
     parsed.setdefault("analysis", parsed.get("intent", ""))
     parsed.setdefault("intent", "")
     parsed.setdefault("notes_for_planner", "")
-    parsed.setdefault("replan_reason", "")
     parsed.setdefault("clarify_message", "")
     parsed.setdefault("cannot_reason", "")
     raw_codes = parsed.get("candidate_tool_codes")
@@ -127,20 +128,23 @@ def _normalize_analyse(parsed: dict[str, Any], code_to_name: dict[str, str]) -> 
 
 async def run_analyse(
     *,
-    phase: Literal["pre", "post"],
     user_message: str,
     rewritten: str,
     servers: list[str],
     retrieved_tool_names: list[str],
     recent_messages: list[dict],
     mid_summaries: list[dict],
+    recent_json_max: int = 8000,
+    mid_json_max: int = 6000,
+    # 兼容旧调用方传入的多轮参数（单轮编排已忽略）
+    phase: Literal["pre", "post"] | None = None,
     tool_results: list[dict] | None = None,
     prior_analyse: dict[str, Any] | None = None,
     plan: dict[str, Any] | None = None,
     cycle: int = 0,
-    recent_json_max: int = 8000,
-    mid_json_max: int = 6000,
 ) -> tuple[dict[str, Any], int, dict[str, str]]:
+    if phase == "post":
+        _log.warning("run_analyse(phase=post) 已废弃，按单轮 pre 处理")
     t0 = time.time()
     recent_json = _truncate_json(recent_messages, recent_json_max)
     mid_json = _truncate_json(mid_summaries, mid_json_max)
@@ -148,28 +152,7 @@ async def run_analyse(
         servers, tool_names=retrieved_tool_names
     )
 
-    if phase == "post":
-        phase_label = f"execute 后复检（第 {cycle} 轮）"
-        extra_context = "、本轮计划与工具调用结果"
-        post_section = f"""
-  本轮计划 JSON：
-  {_truncate_json(plan or {}, 6000)}
-
-  已有工具调用结果（JSON 数组）：
-  {_truncate_json(tool_results or [], 12000)}
-
-  上一轮分析 JSON：
-  {_truncate_json(prior_analyse or {}, 4000)}
-"""
-    else:
-        phase_label = "execute 前（首轮）"
-        extra_context = "（此时尚无工具结果）"
-        post_section = ""
-
     prompt = get_prompts()["analyse"].format(
-        phase_label=phase_label,
-        extra_context=extra_context,
-        post_section=post_section,
         servers=json.dumps(servers, ensure_ascii=False),
         tools_short_catalog=tools_short_catalog,
         user_message=user_message.strip(),
@@ -179,7 +162,7 @@ async def run_analyse(
     )
     llm = _struct_llm()
     resp = await ainvoke_with_system(llm, human_content=prompt)
-    record_llm_usage(resp, f"analyse_{phase}")
+    record_llm_usage(resp, "analyse_pre")
     raw = getattr(resp, "content", None) or ""
     parsed = _safe_json_loads(str(raw))
     if not parsed:
@@ -188,11 +171,10 @@ async def run_analyse(
     parsed = _normalize_analyse(parsed, code_to_name)
 
     disp = normalize_disposition(parsed)
-    if phase == "pre" and disp in ("replan", "close"):
-        _log.warning("analyse pre 阶段出现 %s，降级为 proceed", disp)
-        parsed["disposition"] = "proceed"
-    if phase == "post" and disp == "proceed":
-        parsed["disposition"] = "replan"
+    if disp not in VALID_DISPOSITIONS:
+        _log.warning("未知 disposition=%s，降级为 proceed", disp)
+        disp = "proceed"
+    parsed["disposition"] = disp
 
     ms = int((time.time() - t0) * 1000)
     return parsed, ms, code_to_name

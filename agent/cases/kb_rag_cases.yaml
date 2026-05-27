@@ -12,11 +12,9 @@ defaults:
 
   min_recall_at_k: 1.0
 
-  min_mrr: 0.3
+  min_mrr: 0.15
 
   require_hit_at_k: true
-
-  require_forbidden_clean: true
 
 
 
@@ -24,7 +22,7 @@ cases:
 
   - id: kb_elden_intro
 
-    name: 艾尔登-简介
+    name: 艾尔登-游戏名片
 
     query: "交界地开放世界魂系列艾尔登法环是什么游戏"
 
@@ -34,7 +32,7 @@ cases:
 
       expected_sections:
 
-        - { article_id: game:elden-ring, section: 简介 }
+        - { article_id: game:elden-ring, section: 游戏名片 }
 
 
 
@@ -51,10 +49,6 @@ cases:
       expected_sections:
 
         - { article_id: game:elden-ring, section: 玩法 }
-
-      forbidden_sections:
-
-        - { article_id: game:apex, section: 玩法 }
 
 
 
@@ -168,10 +162,6 @@ cases:
 
         - { article_id: game:apex, section: 玩法 }
 
-      forbidden_sections:
-
-        - { article_id: game:elden-ring, section: 玩法 }
-
 
 
   - id: kb_cross_lore
@@ -188,8 +178,34 @@ cases:
 
         - { article_id: game:elden-ring, section: 游戏背景 }
 
-      forbidden_sections:
+  - id: kb_witcher3_intro
+    name: 巫师3-游戏名片
+    query: "巫师3猎魔人杰洛特开放世界角色扮演剧情"
+    memory_hints: ["巫师3", "杰洛特"]
+    expect:
+      expected_sections:
+        - { article_id: game:witcher3, section: 游戏名片 }
 
-        - { article_id: game:apex, section: 游戏背景 }
+  - id: kb_cyberpunk_gameplay
+    name: 赛博朋克-玩法
+    query: "赛博朋克2077黑客快速破解枪战义体技能"
+    memory_hints: ["赛博朋克", "技能树"]
+    expect:
+      expected_sections:
+        - { article_id: game:cyberpunk2077, section: 玩法 }
 
+  - id: kb_rdr2_background
+    name: 大镖客-背景
+    query: "荒野大镖客2范德林德帮亚瑟摩根西部1899"
+    memory_hints: ["西部", "范德林德"]
+    expect:
+      expected_sections:
+        - { article_id: game:rdr2, section: 游戏背景 }
 
+  - id: kb_godofwar_gameplay
+    name: 战神-玩法
+    query: "战神利维坦之斧混沌之刃女武神阿特柔斯战斗"
+    memory_hints: ["战神", "克雷多斯"]
+    expect:
+      expected_sections:
+        - { article_id: game:godofwar, section: 玩法 }

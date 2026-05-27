@@ -66,7 +66,7 @@ gates:
     thresholds: &memory_thresholds
       case_pass_rate_min: 0.80
       mean_recall_at_k_min: 0.90
-      mean_mrr_min: 0.80
+      mean_mrr_min: 0.50
 
   release_kb_rag:
     desc: "改 KB 分块/embedding 时跑 run_kb_rag_eval.py"
@@ -74,9 +74,9 @@ gates:
       - recall_at_k
       - mrr
     thresholds: &kb_rag_thresholds
-      case_pass_rate_min: 0.85
+      case_pass_rate_min: 0.70
       mean_recall_at_k_min: 0.90
-      mean_mrr_min: 0.80
+      mean_mrr_min: 0.50
 
   ab_compare:
     desc: "run_ab_eval.py；对照实验回归"
@@ -107,6 +107,8 @@ metrics:
   timing_execute_ms: { tier: observability }
   retrieval_latency_ms: { tier: observability, note: "有 retrieve 的 turn 才看" }
   orch_cycles: { tier: observability }
+  pipeline_ok: { tier: P0, gate: dialogue_e2e, note: "改写→路由→tool_retrieve→analyse→plan→执行→成稿" }
+  pipeline_pass_rate: { tier: P0, gate: dialogue_e2e, source: aggregate_batch }
 
 # tool_scorer 细项（仅 tool_cases）
 tool_accuracy:

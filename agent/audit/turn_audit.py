@@ -160,7 +160,7 @@ def run_rule_audit(turn: dict[str, Any]) -> list[dict[str, Any]]:
 
     output = turn.get("output") if isinstance(turn.get("output"), dict) else {}
     out_text = str(output.get("text", "")).strip()
-    if status == "ok" and last_disp in ("", "close", "answer") and not out_text:
+    if status == "ok" and last_disp in ("", "proceed", "answer") and not out_text:
         issues.append({
             "layer": "output",
             "severity": "fail",
@@ -168,11 +168,11 @@ def run_rule_audit(turn: dict[str, Any]) -> list[dict[str, Any]]:
             "request_id": rid,
         })
 
-    if not turn.get("planning_cycle_complete") and status == "ok" and last_disp == "close":
+    if not turn.get("planning_cycle_complete") and status == "ok" and last_disp == "proceed":
         issues.append({
             "layer": "orchestration",
             "severity": "warn",
-            "summary": "disposition=close 但 planning_cycle_complete=false",
+            "summary": "disposition=proceed 但 planning_cycle_complete=false",
             "request_id": rid,
         })
 

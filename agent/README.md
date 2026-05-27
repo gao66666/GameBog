@@ -9,7 +9,7 @@ GoBlog 项目的智能对话 Agent，基于大语言模型 + 三层记忆系统 
 ## 目录
 
 - [核心架构](#核心架构)
-- [三阶段处理流程](#三阶段处理流程)
+- [单轮编排流程](#单轮编排流程)
 - [记忆系统](#记忆系统)
 - [MCP 工具集](#mcp-工具集)
 - [目录结构](#目录结构)
@@ -24,80 +24,72 @@ GoBlog 项目的智能对话 Agent，基于大语言模型 + 三层记忆系统 
 
 ## 核心架构
 
+入口：**Web** `POST /chat`（经 Go ChatProxy SSE），或 **IM** 各平台 webhook → Go `handler/channel` → 同一 Agent 链路。
+
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        用户请求 (POST /chat)                        │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │
-                           ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  阶段 0: Query 改写 (rag.rewrite_query)                              │
-│  用 LLM 补全省略/指代/拆分复合问题，提升检索质量                      │
-└──────────────────────────┬───────────────────────────────────────────┘
-                           │
-                           ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  阶段 1: 路由选组 (agent_core._route)                                │
-│  用 LLM 判断需要哪个 MCP Server 组: [public] / [user] / [public,user]│
-└──────────────────────────┬───────────────────────────────────────────┘
-                           │
-                           ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  阶段 2: Agent 执行 (agent_core.build_agent + agent.astream_events)  │
-│  加载选中组的 MCP 工具 + 上下文(短/中/长期记忆) → SSE 流式输出       │
-└──────────────────────────┬───────────────────────────────────────────┘
-                           │
-                           ▼
-               ┌───────────────────────┐
-               │  三层记忆自动落盘      │
-               │  短期→中期→长期 渐进归档 │
-               └───────────────────────┘
+用户消息
+    → Query 改写
+    → 路由选组（public / user / general）+ memory_hints
+    → Hybrid 工具检索（组内向量 + 词面 Top-K）
+    → analyse（四态 disposition）
+         ├─ answer / clarify / cannot → 直接 output
+         └─ proceed → 长期记忆检索 → plan → execute（MCP 工具）
+              → output 成稿 → SSE 流式答复
+    → 短期/中期落盘 + 异步长期记忆沉淀
 ```
 
-## 三阶段处理流程
+与 Go 后端：Gin 负责 JWT、限流、Redis 会话；`AGENT_URL` HTTP/SSE 代理至本服务，结构化 fact 由 Go `PresentationTranslator` 译为中文进度（见项目根目录 [readme.md](../readme.md) 多渠道 IM 配置）。
 
-### 阶段 0 — Query 改写 (`rag.py`)
+## 单轮编排流程
 
-将用户原始问题用 LLM 改写为更适合检索的表述：
-- 补全省略和指代（如"那个游戏" → 具体名称）
-- 使用标准术语
-- 拆分复合问题为多个检索要点
+### Query 改写 (`core/rag.py`)
 
-### 阶段 1 — 路由选组 (`agent_core.py`)
+- 补全省略、指代，复合问题用 `；` 拆成多检索要点（供 Dense 分路向量检索）
+- 输出 `memory_hints` 供 Sparse（BM25）与路由侧使用
 
-两阶段 Agent 设计的关键：路由阶段**不加载全部工具**，只给 LLM 两组 Server 的摘要描述，LLM 决策成本低，返回需要哪几组：
+### 路由选组 (`core/agent_core.py`)
 
-| Server 组 | 摘要说明                                                                 |
-| --------- | ------------------------------------------------------------------------ |
-| `public`  | 公开只读：搜索文章、文章详情/排行榜/评论、话题、游戏库、用户公开资料     |
-| `user`    | 用户授权（需 token）：我的资料、我的文章、收藏、关注话题、游戏记录、积分余额/流水/兑换记录 |
+路由阶段**不加载全部工具**，只选 MCP 组并给出 `tool_hints` / `memory_hints`：
 
-路由时的额外处理：
-- 若未传入 `token`，`user` 组不可用
-- 路由结果为空则 Agent 退化为纯闲聊模式
+| Server 组 | 说明 |
+| --------- | ---- |
+| `public`  | 文章/话题/游戏库等公开只读 API |
+| `user`    | 需 JWT：我的资料、收藏、积分等 |
+| `general` | 时间、计算、字数等本地工具 |
 
-### 阶段 2 — Agent 执行 (`agent_core.py`)
+未传 `token` 时 `user` 组不可用。
 
-根据路由结果加载对应的 MCP 工具 + `get_current_time` 内置工具，构建 Agent，注入上下文后流式执行。
+### Hybrid 工具检索 (`tools/tool_retrieval.py`)
 
-**上下文组装**（按优先级）：
-1. **长期记忆** — 来自 MongoDB（结构化事实）+ Qdrant（向量经验），按相关度排序
-2. **中期摘要** — 来自 Redis，之前轮次的 LLM 摘要
-3. **短期对话** — 最近几轮用户/助手原文
-4. **当前问题** — 改写后的 query
+在已选组内用「改写句 + tool_hints」做 embedding 与词面 Hybrid 召回，执行阶段再注入完整 tool schema（`dynamic_tool_injection`）。
 
-**流式事件**（SSE `data:` 格式）：
+### analyse → plan → execute → output (`core/planning_round.py`)
 
-| 事件类型     | 说明                     |
-| ------------ | ------------------------ |
-| `session`    | Session ID               |
-| `rewrite`    | 改写结果 + 耗时          |
-| `route`      | 路由结果 + 耗时          |
-| `token`      | LLM 输出 token 流        |
-| `tool_start` | 工具调用开始             |
-| `tool_end`   | 工具调用结束（结果预览） |
-| `done`       | 完成                     |
-| `error`      | 异常（含 traceback）     |
+**analyse disposition（四态，单轮无 replan/close）**：
+
+| disposition | 行为 |
+|-------------|------|
+| `answer`    | 无需工具/记忆，直接成稿 |
+| `clarify`   | 追问用户 |
+| `cannot`    | 说明无法完成 |
+| `proceed`   | 检索记忆 → 计划 → 调工具 → output 综合成稿 |
+
+`proceed` 路径：`retrieve_long_term_for_turn`（Mongo + Qdrant Hybrid，含公共游戏 Wiki KB）→ `run_plan` → `stream_tool_execution` → `run_output`。
+
+### SSE 阶段（fact 帧，见 `core/stream_emitter.py`）
+
+| phase | 说明 |
+|-------|------|
+| `session` | 会话 ID |
+| `rewrite` | 改写结果 |
+| `route` | 路由组 + hints |
+| `tool_retrieve` | 召回的工具名列表 |
+| `analyse` | disposition + 分析摘要 |
+| `retrieve` | 长期记忆/KB 命中 |
+| `plan` | 计划步骤 |
+| `tool_invoke` | 工具开始/结束 |
+| `output` / `answer` | 最终回复流 |
+| `done` | 耗时与 token 统计 |
 
 ---
 
@@ -223,8 +215,8 @@ agent/
 │
 ├── core/                      # 对话主链路
 │   ├── agent_core.py          # 路由选组 + Agent 构建 + 工具执行
-│   ├── rag.py                 # Query 改写
-│   ├── planning_round.py      # analyse → plan → execute → output
+│   ├── rag.py                 # Query 改写 + 多意图拆分
+│   ├── planning_round.py      # analyse（四态）→ plan → execute → output
 │   ├── reflection.py          # 长期记忆召回 / 落盘
 │   ├── stream_emitter.py      # SSE v1 fact 帧
 │   ├── token_usage.py         # 各阶段 token 聚合
@@ -302,31 +294,30 @@ python main.py
 
 ### 3. 启动 Agent
 
-```bash
+本项目 Python 环境统一使用 conda 环境 **`langchain_agent`**（与 `run_eval.ps1` 一致）。
+
+```powershell
 cd agent
+conda activate langchain_agent
+# 或直接使用: M:\conda_envs\langchain_agent\python.exe
 
-# 创建虚拟环境（推荐）
-python -m venv .venv
-.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # Linux/Mac
-
-# 安装依赖
 pip install -r requirements.txt
-
-# 启动
 python main.py
 # → http://0.0.0.0:9091
 ```
 
 ### 4. 试用
 
-```bash
-# CLI 测试（只读，不带用户 token）
-# 一键离线测评（单元测试 + 注册表 + KB dry-run）
-python run_eval.py
+```powershell
+conda activate langchain_agent
 
-# Agent 在线时加 E2E
+# 一键测评（离线默认；Agent :9091 在线时加 --e2e）
+python run_eval.py
 python run_eval.py --e2e --token=xxx
+
+# 30 轮对话 E2E（15 短 + 15 长，完整链路 + 工具 + KB RAG）
+python scripts/run_dialogue_metrics_eval.py --token <JWT>
+```
 
 # 手工 SSE 联调
 python tests/test_agent.py "有什么好玩的游戏"
@@ -366,7 +357,7 @@ python tests/test_agent.py "我上次说自己喜欢什么类型的游戏" --tok
 }
 ```
 
-响应：SSE 流式（`text/event-stream`），事件见[阶段 2 事件表](#阶段-2--agent-执行)。
+响应：SSE 流式（`text/event-stream`），阶段见[单轮编排流程](#单轮编排流程)中的 SSE 表。
 
 ### `POST /memory/session-end`
 
@@ -409,7 +400,7 @@ python tests/test_agent.py "我上次说自己喜欢什么类型的游戏" --tok
 | `mongo`         | 长期记忆结构化存储                                      |
 | `qdrant`        | 长期记忆向量检索                                        |
 | `memory`        | 记忆窗口/TTL/检索策略                                   |
-| `orchestration` | 改写-路由-工具检索编排策略                              |
+| `orchestration` | 工具检索、`max_orchestration_cycles`（默认 1，单轮）   |
 
 各段均可独立配置 `base_url` / `api_key` / `model` / `temperature` / `thinking`。
 

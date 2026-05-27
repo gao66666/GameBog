@@ -171,11 +171,17 @@ def chunk_markdown(
             continue
 
         parts = _split_oversized(body, chunk_size, chunk_overlap)
+        game_label = (doc_title or "").strip() or (
+            sec_path[0].strip() if sec_path else ""
+        )
         for pi, part in enumerate(parts):
             text = part
             if include_heading_in_content and sec_title:
                 prefix = " / ".join(sec_path)
-                text = f"【{prefix}】\n\n{part}"
+                head = f"【{prefix}】"
+                if game_label:
+                    head = f"检索: {game_label} | {sec_title.strip()}\n\n{head}"
+                text = f"{head}\n\n{part}"
             out.append(
                 MarkdownChunk(
                     content=text,

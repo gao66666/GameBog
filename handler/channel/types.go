@@ -4,8 +4,10 @@ import "net/http"
 
 // 通道名称（与 URL /channel/:name/webhook 一致）。
 const (
-	NameFeishu = "feishu"
-	NameWeCom  = "wecom"
+	NameFeishu   = "feishu"
+	NameWeCom    = "wecom"
+	NameSlack    = "slack"
+	NameDingTalk = "dingtalk"
 )
 
 // Inbound 各适配器归一化后的入站用户消息。
@@ -34,11 +36,14 @@ type Outbound struct {
 type WebhookInput struct {
 	RawBody []byte
 	Header  http.Header
+	Method  string
+	Query   map[string][]string
 }
 
 // WebhookResult 适配器解析 webhook 后的同步响应；非空 Async 由 Hub 异步处理。
 type WebhookResult struct {
 	HTTPStatus int
 	Body       any
+	PlainBody  string // 非空时以 text/plain 返回（如企微 URL 校验 echostr）
 	Async      *Inbound
 }

@@ -1,5 +1,5 @@
 """
-GoBlog Agent HTTP：改写 → 路由 → 工具检索 → analyse↔(plan→execute) → output 成稿。
+GoBlog Agent HTTP：改写 → 路由 → 工具检索 → analyse(pre) → plan → execute → output 成稿（单轮）。
 启动: uvicorn main:app --host 0.0.0.0 --port 9091
 """
 
@@ -18,10 +18,8 @@ from core.agent_core import _route, build_agent, resolve_tools_for_execution, st
 from infra.agent_metrics import CHAT_REQUESTS
 from memory.memory_turn import persist_chat_turn
 from core.planning_round import (
-    EXECUTE_DISPOSITIONS,
     TERMINAL_DISPOSITIONS,
     build_execute_messages,
-    max_orchestration_cycles,
     normalize_disposition,
     run_output,
     run_analyse,
@@ -262,71 +260,50 @@ async def chat(
             output_disposition = disposition
             force_output_note = ""
 
-            long_term_fetched = False
-            executed_once = False
-            prior_analyse: dict[str, Any] = {}
-            max_cycles = max_orchestration_cycles()
+            # 单轮：analyse 四态；answer/clarify/cannot 早退，proceed → plan/execute → output 成稿
             orch_cycle = 0
-            terminal = False
+            t_a = time.time()
+            analyse, analyse_ms, code_to_name = await run_analyse(
+                user_message=req.message,
+                rewritten=rewritten or req.message,
+                servers=servers,
+                retrieved_tool_names=retrieved_tool_names,
+                recent_messages=recent_messages,
+                mid_summaries=mid_summaries,
+            )
+            disposition = normalize_disposition(analyse)
+            timings["analyse_pre_ms"] = int((time.time() - t_a) * 1000)
+            for line in em.emit_analyse(
+                req.message,
+                analyse,
+                disposition,
+                timings["analyse_pre_ms"],
+                phase="pre",
+                cycle=1,
+            ):
+                yield line
 
-            while orch_cycle < max_cycles and not terminal:
-                phase = "post" if executed_once else "pre"
-                t_a = time.time()
-                analyse, analyse_ms, code_to_name = await run_analyse(
-                    phase=phase,
-                    user_message=req.message,
-                    rewritten=rewritten or req.message,
-                    servers=servers,
-                    retrieved_tool_names=retrieved_tool_names,
-                    recent_messages=recent_messages,
-                    mid_summaries=mid_summaries,
-                    tool_results=all_tool_results if phase == "post" else None,
-                    prior_analyse=prior_analyse if phase == "post" else None,
-                    plan=plan if phase == "post" else None,
-                    cycle=orch_cycle + 1,
+            if disposition in TERMINAL_DISPOSITIONS:
+                output_disposition = disposition
+            else:
+                t_r = time.time()
+                long_term_context = await retrieve_long_term_for_turn(
+                    req.user_id,
+                    rewritten or req.message,
+                    mongo_limit=mongo_retrieval_limit,
+                    qdrant_limit=qdrant_retrieval_limit,
+                    memory_hints=memory_hints,
                 )
-                disposition = normalize_disposition(analyse)
-                key = "analyse_post_ms" if phase == "post" else "analyse_pre_ms"
-                timings[key] = analyse_ms
-                for line in em.emit_analyse(
-                    req.message,
-                    analyse,
-                    disposition,
-                    analyse_ms,
-                    phase=phase,
-                    cycle=orch_cycle + 1,
+                retrieve_ms = int((time.time() - t_r) * 1000)
+                timings["retrieve_ms"] = retrieve_ms
+                for line in em.emit_retrieve(
+                    rewritten or req.message,
+                    len(long_term_context),
+                    retrieve_ms,
+                    memory_hints=memory_hints,
+                    long_term_hits=long_term_context,
                 ):
                     yield line
-
-                if disposition in TERMINAL_DISPOSITIONS:
-                    output_disposition = disposition
-                    terminal = True
-                    break
-
-                if disposition not in EXECUTE_DISPOSITIONS:
-                    _log.warning("未知 disposition=%s，按 proceed 处理", disposition)
-                    disposition = "proceed"
-
-                if not long_term_fetched:
-                    t_r = time.time()
-                    long_term_context = await retrieve_long_term_for_turn(
-                        req.user_id,
-                        rewritten or req.message,
-                        mongo_limit=mongo_retrieval_limit,
-                        qdrant_limit=qdrant_retrieval_limit,
-                        memory_hints=memory_hints,
-                    )
-                    retrieve_ms = int((time.time() - t_r) * 1000)
-                    timings["retrieve_ms"] = retrieve_ms
-                    for line in em.emit_retrieve(
-                        rewritten or req.message,
-                        len(long_term_context),
-                        retrieve_ms,
-                        memory_hints=memory_hints,
-                        long_term_hits=long_term_context,
-                    ):
-                        yield line
-                    long_term_fetched = True
 
                 plan, plan_ms = await run_plan(
                     analyse=analyse,
@@ -337,59 +314,47 @@ async def chat(
                     code_to_name=code_to_name,
                     long_term_context=long_term_context,
                 )
-                timings["plan_ms"] = timings.get("plan_ms", 0) + plan_ms
+                timings["plan_ms"] = plan_ms
                 for line in em.emit_plan(plan, plan_ms):
                     yield line
 
-                if not plan.get("requires_tools", True):
-                    output_disposition = "close"
-                    terminal = True
-                    break
+                if plan.get("requires_tools", True):
+                    exec_tool_names = resolve_tools_for_execution(
+                        servers,
+                        analyse=analyse,
+                        plan=plan,
+                        retrieved_tool_names=retrieved_tool_names,
+                        code_to_name=code_to_name,
+                    )
+                    agent = build_agent(
+                        servers,
+                        tool_names=exec_tool_names,
+                        execute_mode=True,
+                    )
+                    exec_messages = build_execute_messages(
+                        plan=plan,
+                        analyse=analyse,
+                        long_term_context=long_term_context,
+                        recent_messages=recent_messages,
+                        user_msg=user_msg,
+                    )
+                    agent_config = {
+                        "configurable": {"thread_id": str(req.user_id), "token": req.token}
+                    }
+                    batch_results: list[dict] = []
+                    t_ex = time.time()
+                    async for kind, payload in stream_tool_execution(
+                        agent, exec_messages, agent_config, em
+                    ):
+                        if kind == "line":
+                            yield payload
+                        elif kind == "result":
+                            batch_results = payload
+                    timings["execute_ms"] = int((time.time() - t_ex) * 1000)
+                    all_tool_results.extend(batch_results)
+                    orch_cycle = 1
 
-                exec_tool_names = resolve_tools_for_execution(
-                    servers,
-                    analyse=analyse,
-                    plan=plan,
-                    retrieved_tool_names=retrieved_tool_names,
-                    code_to_name=code_to_name,
-                )
-                agent = build_agent(
-                    servers,
-                    tool_names=exec_tool_names,
-                    execute_mode=True,
-                )
-                exec_messages = build_execute_messages(
-                    plan=plan,
-                    analyse=analyse,
-                    long_term_context=long_term_context,
-                    recent_messages=recent_messages,
-                    user_msg=user_msg,
-                )
-                agent_config = {
-                    "configurable": {"thread_id": str(req.user_id), "token": req.token}
-                }
-                batch_results: list[dict] = []
-                t_ex = time.time()
-                async for kind, payload in stream_tool_execution(
-                    agent, exec_messages, agent_config, em
-                ):
-                    if kind == "line":
-                        yield payload
-                    elif kind == "result":
-                        batch_results = payload
-                timings["execute_ms"] = timings.get("execute_ms", 0) + int(
-                    (time.time() - t_ex) * 1000
-                )
-                all_tool_results.extend(batch_results)
-                prior_analyse = analyse
-                executed_once = True
-                orch_cycle += 1
-
-            if not terminal:
-                output_disposition = "close"
-                force_output_note = (
-                    f"已达最大编排轮次 {max_cycles}，请基于已有工具结果谨慎成稿。"
-                )
+                output_disposition = "proceed"
 
             final_reply, output_ms = await run_output(
                 disposition=output_disposition,

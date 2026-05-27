@@ -47,9 +47,9 @@ async def _run(cases: list[dict], defaults: dict, section_order: list[str]) -> l
         hints = c.get("memory_hints") if isinstance(c.get("memory_hints"), list) else None
         expect = dict(defaults)
         expect.update(c.get("expect") or {})
-        if not expect.get("expected_chunks"):
-            print(f"[SKIP] {cid} — 无 expected_chunks")
-            results.append({"case_id": cid, "passed": False, "skipped": True, "failures": ["no expected_chunks"]})
+        if not expect.get("expected_chunks") and not expect.get("expected_sections"):
+            print(f"[SKIP] {cid} — 无 expected_chunks 或 expected_sections")
+            results.append({"case_id": cid, "passed": False, "skipped": True, "failures": ["no expected_chunks or sections"]})
             continue
 
         print(f"▶ {cid} q={query[:36]!r} … ", end="", flush=True)

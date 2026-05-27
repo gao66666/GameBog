@@ -14,7 +14,7 @@ cases:
     servers_must_include: [general]
     servers_must_exclude: [user]
     tools_any: [get_current_time]
-    disposition_any: [answer, close, proceed]
+    disposition_any: [answer, proceed, clarify, cannot]
     max_total_ms: 20000
 
   - id: general_calc
@@ -25,7 +25,7 @@ cases:
     status: ok
     servers_must_include: [general]
     tools_any: [calculate]
-    disposition_any: [answer, close, proceed]
+    disposition_any: [answer, proceed, clarify, cannot]
 
   - id: public_search
   name: 公开-搜文章
@@ -37,7 +37,7 @@ cases:
     servers_must_exclude: [user]
     tools_min_count: 1
     tools_any: [search_articles]
-    disposition_any: [close, proceed, answer]
+    disposition_any: [answer, proceed, clarify, cannot]
     max_total_ms: 45000
 
   - id: chat_greeting
@@ -46,7 +46,7 @@ cases:
   token: ""
   expect:
     status: ok
-    disposition_any: [answer, close]
+    disposition_any: [answer, proceed]
     tools_max_count: 0
     max_total_ms: 35000
 
@@ -70,5 +70,5 @@ cases:
     servers_must_include: [user]
     tools_min_count: 1
     tools_any: [me_get_wallet]
-    disposition_any: [close, proceed, answer]
+    disposition_any: [answer, proceed, clarify, cannot]
     max_total_ms: 45000

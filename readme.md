@@ -13,6 +13,7 @@
 - 积分系统 & **积分商城**：赚取积分 → 兑换商品（Redis Lua 扣库存 + MySQL 占码）
 - 全文检索（Elasticsearch），热门与排行榜（Redis ZSet）
 - AI 个人助手（`agent/`，对接博客 MCP 与 RAG）
+- 多渠道 IM 机器人（飞书 / Slack / 企业微信 / 钉钉，可选）
 
 ## 技术栈
 
@@ -83,22 +84,26 @@ docker compose --profile app up -d --build
 
 常用项：`mq.nsq.enabled`、`mq.kafka`、搜索与 Agent 相关配置见 `agent/config/config.yaml`。
 
-### 飞书机器人（可选）
+### 多渠道 IM 机器人（可选）
 
-统一 IM 收发层：`handler/channel`（Hub + Adapter）。飞书回调：
+Go 侧统一收发层：`handler/channel`（Hub + Adapter），将各平台 webhook 归一化后调用 Python Agent（`AGENT_URL`），再异步回发平台。无需 JWT；平台用户映射为合成 `user_id`（Redis），会话与 Web 侧边栏按 `chat_id` / 频道隔离。
 
-- `POST /api/v1/channel/feishu/webhook`（推荐）
-- `POST /api/v1/channel/feishu/event`（兼容旧路径）
+| 通道 | Webhook 路径 | 启用条件（环境变量） |
+|------|----------------|----------------------|
+| 飞书 | `POST /api/v1/channel/feishu/webhook`（兼容 `/channel/feishu/event`） | `FEISHU_APP_ID` + `FEISHU_APP_SECRET` |
+| Slack | `POST /api/v1/channel/slack/webhook` | `SLACK_BOT_TOKEN` + `SLACK_SIGNING_SECRET`；群聊 @ 需 `SLACK_BOT_USER_ID` |
+| 企业微信 | `GET/POST /api/v1/channel/wecom/webhook` | `WECOM_CORP_ID`、`WECOM_AGENT_ID`、`WECOM_SECRET`、`WECOM_TOKEN`、`WECOM_AES_KEY` |
+| 钉钉 | `POST /api/v1/channel/dingtalk/webhook` | `DINGTALK_APP_SECRET`（Outgoing 机器人加签） |
 
-无需 JWT。环境变量：
+**飞书**：订阅 `im.message.receive_v1`；单聊直接发文字，群聊需 @ 机器人。可选 `FEISHU_VERIFICATION_TOKEN`、`FEISHU_ENCRYPT_KEY`。
 
-| 变量                                  | 说明                                      |
-| ------------------------------------- | ----------------------------------------- |
-| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 自建应用凭证                              |
-| `FEISHU_VERIFICATION_TOKEN`           | 事件订阅「Verification Token」            |
-| `FEISHU_ENCRYPT_KEY`                  | 启用加密时填写；与平台「Encrypt Key」一致 |
+**Slack**：Event Subscriptions 指向 webhook；需 `chat:write` 等 Bot 权限；`url_verification` 由适配器自动响应。
 
-开放平台配置：订阅 `im.message.receive_v1`，请求 URL 填 `https://<公网域名>/api/v1/channel/feishu/event`。需同时启动 Python Agent（`AGENT_URL`）。单聊直接发文字；群聊需 @ 机器人。飞书用户映射为合成 `user_id`（Redis），会话按 `chat_id` 与 Web 侧边栏隔离。
+**企业微信**：自建应用「接收消息」回调 URL 填 webhook；GET 用于 URL 校验（解密 echostr），POST 为加密 XML。
+
+**钉钉**：自定义机器人开启 **Outgoing**，消息接收地址填 webhook；回复走回调中的 `sessionWebhook`。
+
+以上通道均需 Go 后端配置 `AGENT_URL` 且 Agent 进程可用。
 
 搜索服务默认关闭，如需启用 Elasticsearch，请参考 [docker-compose.yml](docker-compose.yml) 中注释的 elasticsearch 服务。
 
@@ -121,11 +126,11 @@ API 前缀 `/api/v1`，鉴权头 `Authorization: Bearer <token>`。
 项目包含一个完整的 Python AI 助手（`agent/`），基于大语言模型 + 三层记忆系统 + MCP 工具集，为博客用户提供自然语言交互体验。
 
 核心特性：
-- **三阶段编排**：Query 改写 → 路由选组 → Agent 执行（SSE 流式推送）
-- **三层渐进记忆**：Redis 短期缓存 → LLM 中期摘要 → MongoDB + Qdrant 长期记忆
-- **MCP 工具集**：按 public/user/general 分组，路由阶段轻量选组，执行阶段动态注入
-- **Hybrid RAG**：稀疏检索 + 语义向量检索 + RRF 重排，结合时间衰减提升精度
-- **可观测性**：全链路 request_id、结构化事实帧、Prometheus 指标
+- **单轮编排**：Query 改写 → 路由选组 → Hybrid 工具检索 → analyse（四态）→ plan → execute → output 成稿（SSE 流式）
+- **三层渐进记忆**：Redis 短期 → LLM 中期摘要 → MongoDB + Qdrant 长期记忆（同轮异步沉淀）
+- **MCP 工具集**：public / user / general 分组，路由轻量选组 + 向量/词面召回候选工具
+- **Hybrid RAG**：Dense（改写分意图）+ Sparse（memory_hints）归一化加权融合；KB 按 Markdown 标题 + 递归切分
+- **可观测性**：`request_id` 贯穿、结构化 fact 帧、端到端测评门禁、Prometheus 指标
 
 > 详细文档、启动方式、API 参考、配置说明见 **[agent/README.md](agent/README.md)**
 

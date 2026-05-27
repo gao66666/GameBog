@@ -14,6 +14,14 @@ param(
 
 Set-Location $PSScriptRoot
 
+# 优先使用 langchain_agent conda 环境（与日常开发一致）
+$LangchainPy = "M:\conda_envs\langchain_agent\python.exe"
+if (Test-Path $LangchainPy) {
+    $python = $LangchainPy
+} else {
+    $python = "python"
+}
+
 $argsList = @("run_eval.py")
 if ($E2e) { $argsList += "--e2e" }
 if ($Rag) { $argsList += "--rag" }
@@ -21,5 +29,5 @@ if ($SkipUnit) { $argsList += "--skip-unit" }
 if ($Token) { $argsList += "--token"; $argsList += $Token }
 if ($Chat) { $argsList += "--chat"; $argsList += $Chat }
 
-python @argsList
+& $python @argsList
 exit $LASTEXITCODE

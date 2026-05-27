@@ -1,7 +1,7 @@
 """eval 打分器单元测试（无需 Agent 进程）。"""
 
 from eval.memory_scorer import retrieval_metrics, score_memory_case
-from eval.scorer import aggregate_batch, compute_task_completed, score_turn
+from eval.scorer import aggregate_batch, compute_task_completed, score_full_pipeline, score_turn
 from eval.tool_scorer import score_tool_accuracy
 from eval.ab_compare import compare_ab
 
@@ -62,6 +62,29 @@ def test_memory_precision_recall():
         },
     )
     assert scored["passed"]
+
+
+def test_full_pipeline_ok():
+    turn = {
+        "status": "ok",
+        "rewrite": {"text": "几点"},
+        "route": {"servers": ["general"], "has_token": False},
+        "tool_retrieve": {"tools": ["get_current_time"], "count": 1},
+        "analyses": [{"disposition": "proceed", "cycle": 1}],
+        "plans": [{"requires_tools": True, "step_count": 1}],
+        "planning_cycle_complete": True,
+        "timings": {"execute_ms": 1200, "total_ms": 4000},
+        "tools": [{"tool": "get_current_time", "ok": True}],
+        "output": {"text": "现在 12:00"},
+    }
+    pipe = score_full_pipeline(turn, {"require_full_pipeline": True, "tools_any": ["get_current_time"]})
+    assert pipe["pipeline_ok"] is True
+    scored = score_turn(
+        turn,
+        {"status": "ok", "require_full_pipeline": True, "tools_any": ["get_current_time"]},
+        has_token=False,
+    )
+    assert scored["metrics"]["pipeline_ok"] is True
 
 
 def test_task_completed_and_batch_timing():

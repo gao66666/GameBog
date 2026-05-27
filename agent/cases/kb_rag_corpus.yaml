@@ -4,12 +4,12 @@
 # 执行: python agent/scripts/seed_kb_eval.py --dry-run
 
 source: goblog_kb_eval
-content_revision: 1
+content_revision: 3
 chunk_size: 900
 chunk_overlap: 80
 
 section_order:
-  - 简介
+  - 游戏名片
   - 游戏背景
   - 配置需求
   - 玩法
@@ -34,3 +34,15 @@ articles:
   - article_id: game:apex
     game_name: APEX 英雄
     file: apex.md
+  - article_id: game:witcher3
+    game_name: 巫师3
+    file: witcher3.md
+  - article_id: game:cyberpunk2077
+    game_name: 赛博朋克2077
+    file: cyberpunk2077.md
+  - article_id: game:rdr2
+    game_name: 荒野大镖客2
+    file: rdr2.md
+  - article_id: game:godofwar
+    game_name: 战神
+    file: godofwar.md

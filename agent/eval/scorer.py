@@ -58,6 +58,162 @@ def _retrieval_latency_ms(turn: dict[str, Any]) -> int | None:
     return None
 
 
+def _extract_kb_hits(turn: dict[str, Any]) -> list[dict[str, Any]]:
+    """从 turn 的 retrieve events 中提取知识库记忆。"""
+    retrieves = turn.get("retrieves") if isinstance(turn.get("retrieves"), list) else []
+    hits: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in retrieves:
+        mems = r.get("memories") if isinstance(r.get("memories"), list) else []
+        for m in mems:
+            if not isinstance(m, dict):
+                continue
+            pid = str(m.get("memory_id", "") or m.get("id", "")).strip()
+            if pid and pid not in seen:
+                seen.add(pid)
+                hits.append(m)
+    return hits
+
+
+def _kb_section_key(memory: dict[str, Any]) -> tuple[str, str] | None:
+    """从记忆行提取 (article_id, section_title)。"""
+    aid = str(memory.get("article_id", "")).strip()
+    sp = memory.get("section_path")
+    if isinstance(sp, list) and sp:
+        sec = str(sp[-1]).strip()
+    else:
+        sec = str(memory.get("section_title", "")).strip()
+    if aid and sec:
+        return (aid, sec)
+    return None
+
+
+def score_kb_retrieval(
+    hits: list[dict[str, Any]],
+    expected_sections: list[dict[str, str]],
+    k: int = 10,
+) -> dict[str, Any]:
+    """计算一轮对话中的 KB RAG Recall@K 和 MRR。"""
+    if not expected_sections:
+        return {"kb_recall_at_k": None, "kb_mrr": None, "kb_hit": None, "kb_passed": True}
+
+    expected: list[tuple[str, str]] = []
+    for item in expected_sections:
+        aid = str(item.get("article_id", "")).strip()
+        sec = str(item.get("section", "")).strip()
+        if aid and sec:
+            expected.append((aid, sec))
+
+    if not expected:
+        return {"kb_recall_at_k": None, "kb_mrr": None, "kb_hit": None, "kb_passed": True}
+
+    top = hits[:k]
+    ranked = [_kb_section_key(m) for m in top if _kb_section_key(m) is not None]
+
+    # Recall
+    found = sum(1 for exp in expected if exp in ranked)
+    recall = found / len(expected) if expected else 0
+
+    # MRR
+    first_rank = None
+    for rank, key in enumerate(ranked, 1):
+        if key in expected:
+            first_rank = rank
+            break
+    mrr = 1.0 / first_rank if first_rank else 0.0
+
+    hit = first_rank is not None and first_rank <= k
+
+    return {
+        "kb_recall_at_k": round(recall, 4),
+        "kb_mrr": round(mrr, 4),
+        "kb_hit": hit,
+        "kb_passed": hit and recall >= 0.5,
+    }
+
+
+def score_full_pipeline(turn: dict[str, Any], expect: dict[str, Any]) -> dict[str, Any]:
+    """
+    完整 Agent 链路：改写 → 路由 → 工具检索 → 分析 →（记忆检索）→ 计划 → 执行 → 成稿。
+    expect.require_full_pipeline 为真时参与 pass/fail。
+    """
+    if not expect.get("require_full_pipeline"):
+        return {"pipeline_ok": None}
+
+    failures: list[str] = []
+    rw = turn.get("rewrite")
+    rewrite_ok = isinstance(rw, dict) and bool(str(rw.get("text", "")).strip())
+    if not rewrite_ok:
+        failures.append("pipeline: missing rewrite")
+
+    route = turn.get("route")
+    route_ok = isinstance(route, dict) and isinstance(route.get("servers"), list)
+    if not route_ok:
+        failures.append("pipeline: missing route")
+
+    tool_ret = turn.get("tool_retrieve")
+    tool_retrieve_ok = isinstance(tool_ret, dict)
+    if not tool_retrieve_ok:
+        failures.append("pipeline: missing tool_retrieve")
+
+    analyses = turn.get("analyses") if isinstance(turn.get("analyses"), list) else []
+    analyse_ok = len(analyses) >= 1
+    if not analyse_ok:
+        failures.append("pipeline: missing analyse")
+
+    plans = turn.get("plans") if isinstance(turn.get("plans"), list) else []
+    plan_ok = len(plans) >= 1
+    if not plan_ok:
+        failures.append("pipeline: missing plan")
+
+    cycle_ok = bool(turn.get("planning_cycle_complete"))
+    if not cycle_ok:
+        failures.append("pipeline: planning_cycle_complete=false")
+
+    timings = turn.get("timings") if isinstance(turn.get("timings"), dict) else {}
+    execute_ms = int(timings.get("execute_ms") or 0)
+    tools = turn.get("tools") if isinstance(turn.get("tools"), list) else []
+    names = _tool_names(turn)
+    tools_any = [str(x) for x in (expect.get("tools_any") or [])]
+    tools_min = int(expect.get("tools_min_count", 0) or 0)
+
+    if tools_any or tools_min > 0:
+        tool_exec_ok = any(t in names for t in tools_any) if tools_any else len(names) >= tools_min
+        if not tool_exec_ok:
+            failures.append(f"pipeline: tool execute expected any={tools_any} min={tools_min} got={names}")
+    else:
+        retrieves = turn.get("retrieves") if isinstance(turn.get("retrieves"), list) else []
+        retrieve_hits = sum(int(r.get("hits") or 0) for r in retrieves if isinstance(r, dict))
+        kb_exp = expect.get("kb_expected_sections")
+        if kb_exp:
+            execute_ok = retrieve_hits > 0 or execute_ms > 0 or len(tools) > 0
+        else:
+            execute_ok = execute_ms > 0 or len(tools) > 0
+        if not execute_ok:
+            failures.append("pipeline: missing execute (tools or execute_ms)")
+
+    out = turn.get("output") if isinstance(turn.get("output"), dict) else {}
+    output_ok = bool(str(out.get("text", "")).strip()) or str(turn.get("early_exit", "")).strip() in (
+        "clarify",
+        "cannot",
+        "answer",
+    )
+    if not output_ok:
+        failures.append("pipeline: missing output")
+
+    return {
+        "pipeline_ok": len(failures) == 0,
+        "pipeline_rewrite_ok": rewrite_ok,
+        "pipeline_route_ok": route_ok,
+        "pipeline_tool_retrieve_ok": tool_retrieve_ok,
+        "pipeline_analyse_ok": analyse_ok,
+        "pipeline_plan_ok": plan_ok,
+        "pipeline_cycle_ok": cycle_ok,
+        "pipeline_execute_ms": execute_ms,
+        "pipeline_failures": failures,
+    }
+
+
 def compute_task_completed(turn: dict[str, Any], metrics: dict[str, Any]) -> bool:
     """
     任务完成（结果导向，比 case pass 宽松）：
@@ -184,9 +340,25 @@ def score_turn(
     if expect.get("require_memory") and not metrics["memory_retrieved"]:
         failures.append("expected memory retrieve hits>0")
 
+    # ── KB RAG 指标 ──
+    kb_exp = expect.get("kb_expected_sections")
+    if kb_exp:
+        kb_hits = _extract_kb_hits(turn)
+        kb_scored = score_kb_retrieval(kb_hits, kb_exp, k=10)
+        metrics.update(kb_scored)
+        if not kb_scored.get("kb_passed"):
+            failures.append(f"kb_retrieval recall={kb_scored.get('kb_recall_at_k')} mrr={kb_scored.get('kb_mrr')}")
+
     metrics["task_completed"] = compute_task_completed(turn, metrics)
     if expect.get("require_task_completed") and not metrics["task_completed"]:
         failures.append("task not completed (outcome)")
+
+    pipe = score_full_pipeline(turn, expect)
+    for k, v in pipe.items():
+        if k != "pipeline_failures":
+            metrics[k] = v
+    if pipe.get("pipeline_ok") is False:
+        failures.extend(pipe.get("pipeline_failures") or [])
 
     passed = len(failures) == 0
     return {"passed": passed, "failures": failures, "metrics": metrics}
@@ -236,6 +408,8 @@ def aggregate_batch(results: list[dict[str, Any]], thresholds: dict[str, Any]) -
         and "tools_match" in (r.get("metrics") or {})
     ]
     tool_sel_ok = sum(1 for r in tool_sel if r.get("metrics", {}).get("tools_match"))
+    pipe_cases = [r for r in results if r.get("metrics", {}).get("pipeline_ok") is not None]
+    pipe_ok = sum(1 for r in pipe_cases if r.get("metrics", {}).get("pipeline_ok"))
 
     agg = {
         "cases": n,
@@ -260,6 +434,17 @@ def aggregate_batch(results: list[dict[str, Any]], thresholds: dict[str, Any]) -
         agg["tool_selection_accuracy"] = round(tool_sel_ok / len(tool_sel), 3)
     if tool_cases:
         agg["tool_execution_success_rate"] = agg["tool_ok_rate"]
+    if pipe_cases:
+        agg["pipeline_pass_rate"] = round(pipe_ok / len(pipe_cases), 3)
+
+    # ── KB RAG 指标 ──
+    kb_recalls = [r.get("metrics", {}).get("kb_recall_at_k") for r in results if r.get("metrics", {}).get("kb_recall_at_k") is not None]
+    kb_mrrs = [r.get("metrics", {}).get("kb_mrr") for r in results if r.get("metrics", {}).get("kb_mrr") is not None]
+    if kb_recalls:
+        agg["kb_mean_recall_at_k"] = round(sum(kb_recalls) / len(kb_recalls), 4)
+        agg["kb_mean_mrr"] = round(sum(kb_mrrs) / len(kb_mrrs), 4) if kb_mrrs else 0
+        agg["kb_cases"] = len(kb_recalls)
+        agg["kb_pass_rate"] = round(sum(1 for r in results if r.get("metrics", {}).get("kb_passed")) / len(kb_recalls), 3)
 
     checks = [
         agg["case_pass_rate"] >= float(thresholds.get("case_pass_rate_min", 0.85)),

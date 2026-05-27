@@ -107,16 +107,16 @@ def _sse_line(data: dict) -> str:
 
 
 def _long_term_memory_refs(hits: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """长期记忆召回引用（仅 store/id/kind/score，不含 content）。"""
+    """长期记忆召回引用（不含 content；KB 文档块保留 article_id/section 供测评对齐）。"""
     refs: list[dict[str, Any]] = []
     for h in hits or []:
         if not isinstance(h, dict):
             continue
         store = str(h.get("store", "")).strip()
-        mid = str(h.get("memory_id", "") or h.get("fingerprint", "") or h.get("point_id", "")).strip()
+        mid = str(h.get("memory_id", "") or h.get("id", "") or h.get("fingerprint", "") or h.get("point_id", "")).strip()
         if not store or not mid:
             continue
-        ref: dict[str, Any] = {"store": store, "id": mid}
+        ref: dict[str, Any] = {"store": store, "id": mid, "memory_id": mid}
         kind = str(h.get("kind", "")).strip()
         if kind:
             ref["kind"] = kind
@@ -125,6 +125,19 @@ def _long_term_memory_refs(hits: list[dict[str, Any]] | None) -> list[dict[str, 
                 ref["score"] = round(float(h["score"]), 4)
             except (TypeError, ValueError):
                 pass
+        ms = str(h.get("memory_scope", "")).strip()
+        if ms:
+            ref["memory_scope"] = ms
+        aid = str(h.get("article_id", "")).strip()
+        if aid:
+            ref["article_id"] = aid
+        sp = h.get("section_path")
+        if isinstance(sp, list) and sp:
+            ref["section_path"] = [str(x).strip() for x in sp if str(x).strip()]
+        if h.get("chunk_index") is not None:
+            ref["chunk_index"] = int(h["chunk_index"])
+        if h.get("content_revision") is not None:
+            ref["content_revision"] = int(h["content_revision"])
         refs.append(ref)
     return refs
 
@@ -304,8 +317,6 @@ class StreamEmitter:
             "phase": phase,
             "cycle": cycle,
         }
-        if analyse.get("replan_reason"):
-            output["replan_reason"] = analyse.get("replan_reason")
         yield from self.emit_stage_end(
             "analyse",
             duration_ms=duration_ms,

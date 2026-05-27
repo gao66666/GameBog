@@ -67,7 +67,11 @@ func (h *Hub) HandleWebhook(c *gin.Context) {
 	}
 
 	raw, err := c.GetRawData()
-	if err != nil || len(raw) == 0 {
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "read body failed"})
+		return
+	}
+	if len(raw) == 0 && c.Request.Method != http.MethodGet {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "empty body"})
 		return
 	}
@@ -75,6 +79,8 @@ func (h *Hub) HandleWebhook(c *gin.Context) {
 	res, err := a.HandleWebhook(c.Request.Context(), WebhookInput{
 		RawBody: raw,
 		Header:  c.Request.Header,
+		Method:  c.Request.Method,
+		Query:   c.Request.URL.Query(),
 	})
 	if err != nil {
 		zap.L().Warn("channel webhook error", zap.String("channel", name), zap.Error(err))
@@ -114,6 +120,10 @@ func (h *Hub) HandleWebhook(c *gin.Context) {
 			return
 		}
 		go h.processInbound(a, in)
+	}
+	if res.PlainBody != "" {
+		c.String(res.HTTPStatus, res.PlainBody)
+		return
 	}
 	if res.Body != nil {
 		c.JSON(res.HTTPStatus, res.Body)
@@ -208,6 +218,7 @@ func (h *Hub) MountRoutes(g *gin.RouterGroup) {
 		return
 	}
 	g.POST("/channel/:name/webhook", h.HandleWebhook)
+	g.GET("/channel/:name/webhook", h.HandleWebhook)
 	// 兼容早期飞书路径
 	if _, ok := h.adapter(NameFeishu); ok {
 		g.POST("/channel/feishu/event", func(c *gin.Context) {
